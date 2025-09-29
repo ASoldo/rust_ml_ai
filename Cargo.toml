@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/app",
+    "crates/gpu-kernels",
+    "crates/ml-core",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+authors = ["Andrej Soldo soldo.andrej@gmail.com"]
+
+[workspace.metadata]
+description = "Playground workspace for CUDA kernels and ML experiments"

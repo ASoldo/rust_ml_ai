@@ -1,0 +1,11 @@
+[package]
+name = "ml-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+with-tch = ["tch"]
+
+[dependencies]
+tch = { version = "0.15", optional = true }

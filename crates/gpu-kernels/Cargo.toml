@@ -1,0 +1,7 @@
+[package]
+name = "gpu-kernels"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cudarc = { version = "0.17.3", features = ["std", "nvrtc", "cuda-13000", "driver"] }
