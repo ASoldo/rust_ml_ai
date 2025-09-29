@@ -18,7 +18,7 @@ Out of the box the workspace demonstrates:
 - CUDA toolkit (for NVRTC to find its headers and libraries)
 - Rust toolchain (`cargo` and `rustc`)
 
-## Run the sample
+## GPU demo
 
 ```bash
 cargo run -p cuda-app
@@ -59,10 +59,13 @@ The helper subcommands expect the MNIST files that `tch` looks for:
 - `t10k-images-idx3-ubyte`
 - `t10k-labels-idx1-ubyte`
 
-Place them inside a directory such as `./data/mnist`, then train a lightweight
-classifier and save the weights:
+Create a directory such as `data/mnist` and place the four files directly inside
+it—no extra subfolders. Create a `models` directory for the exported weights,
+then train a lightweight classifier:
 
 ```bash
+mkdir -p data/mnist models
+# copy the MNIST idx files into data/mnist/
 cargo run -p cuda-app --features with-tch -- \
   mnist-train data/mnist models/mnist-linear.ot 5 128 0.001
 ```
@@ -80,3 +83,20 @@ cargo run -p cuda-app --features with-tch -- \
 
 The CLI prints the predicted digit along with per-class probabilities so you can
 inspect the confidence distribution.
+
+Example output using a hand-drawn `0`:
+
+```
+Predicted digit: 0
+Class probabilities:
+  0: 1.000
+  1: 0.000
+  2: 0.000
+  3: 0.000
+  4: 0.000
+  5: 0.000
+  6: 0.000
+  7: 0.000
+  8: 0.000
+  9: 0.000
+```
