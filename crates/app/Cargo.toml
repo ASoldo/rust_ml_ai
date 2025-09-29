@@ -3,6 +3,10 @@ name = "cuda-app"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+with-tch = ["ml-core/with-tch"]
+
 [dependencies]
 gpu-kernels = { path = "../gpu-kernels" }
-ml-core = { path = "../ml-core" }
+ml-core = { path = "../ml-core", default-features = false }

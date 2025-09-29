@@ -11,8 +11,20 @@ pub fn sample_inputs(len: usize) -> (Vec<f32>, Vec<f32>) {
 /// feature in `ml-core` to pull in the `tch` crate.
 pub fn sample_tensor(len: usize) -> tch::Result<tch::Tensor> {
     let (a, _) = sample_inputs(len);
-    Ok(tch::Tensor::of_slice(&a))
+    Ok(tch::Tensor::from_slice(&a))
 }
 
 #[cfg(feature = "with-tch")]
 pub use tch;
+
+#[cfg(feature = "with-tch")]
+mod digits;
+
+#[cfg(feature = "with-tch")]
+pub use digits::{
+    DIGIT_CLASS_COUNT, DigitClassifier, IMAGE_EDGE_PIXELS, Prediction, TrainingConfig,
+    TrainingReport,
+};
+
+#[cfg(feature = "with-tch")]
+pub use digits::{predict_image_file, train_mnist};

@@ -5,7 +5,8 @@ edition = "2024"
 
 [features]
 default = []
-with-tch = ["tch"]
+with-tch = ["tch", "image"]
 
 [dependencies]
-tch = { version = "0.15", optional = true }
+tch = { version = "0.18", optional = true }
+image = { version = "0.25.8", default-features = false, features = ["png", "jpeg"], optional = true }
