@@ -163,3 +163,5 @@ Class probabilities:
    - `http://127.0.0.1:8080/frame.jpg` – last annotated frame as a JPEG snapshot.
    - `http://127.0.0.1:8080/stream.mjpg` – MJPEG stream showing detections in
      real time (the HTML index page embeds this stream by default).
+   - `http://127.0.0.1:8080/detections` – latest detections as JSON, including
+     track identifiers (simple sequential tracker for now).

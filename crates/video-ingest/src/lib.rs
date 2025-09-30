@@ -63,6 +63,12 @@ fn capture_loop(
         });
     }
 
+    // Best-effort: turn off autofocus/auto-exposure so the lens stops hunting.
+    // let _ = cap.set(videoio::CAP_PROP_AUTOFOCUS, 0.0);
+    // let _ = cap.set(videoio::CAP_PROP_FOCUS, 0.0);
+    // For UVC cameras, 1.0 typically selects manual exposure mode.
+    // let _ = cap.set(videoio::CAP_PROP_AUTO_EXPOSURE, 1.0);
+
     let mut frame = Mat::default();
     let (target_w, target_h) = target_size;
 

@@ -6,7 +6,8 @@ use tch::{self, Device, Kind, Tensor};
 /// Single detection returned by the detector.
 #[derive(Debug, Clone, Default)]
 pub struct Detection {
-    pub bbox_xywh: [f32; 4],
+    /// Bounding box stored as `[x1, y1, x2, y2]` in input-image pixels.
+    pub bbox: [f32; 4],
     pub score: f32,
     pub class_id: i64,
 }
@@ -112,10 +113,10 @@ impl Detector {
             if score < self.confidence_threshold {
                 continue;
             }
-            let bbox = [row[0], row[1], row[2], row[3]];
+            let bbox = xywh_to_corners(row[0], row[1], row[2], row[3], self.input_size);
             let class_id = if row.len() > 5 { row[5] as i64 } else { 0 };
             detections.push(Detection {
-                bbox_xywh: bbox,
+                bbox,
                 score,
                 class_id,
             });
@@ -124,6 +125,64 @@ impl Detector {
             }
         }
 
+        apply_nms(&mut detections, 0.45);
+
         Ok(DetectionBatch { detections })
     }
+}
+
+fn xywh_to_corners(x: f32, y: f32, w: f32, h: f32, input_size: (i64, i64)) -> [f32; 4] {
+    let (width, height) = (input_size.0 as f32, input_size.1 as f32);
+    let half_w = w / 2.0;
+    let half_h = h / 2.0;
+    let mut x1 = x - half_w;
+    let mut y1 = y - half_h;
+    let mut x2 = x + half_w;
+    let mut y2 = y + half_h;
+    x1 = x1.clamp(0.0, width - 1.0);
+    y1 = y1.clamp(0.0, height - 1.0);
+    x2 = x2.clamp(0.0, width - 1.0);
+    y2 = y2.clamp(0.0, height - 1.0);
+    [x1, y1, x2, y2]
+}
+
+fn apply_nms(detections: &mut Vec<Detection>, iou_threshold: f32) {
+    detections.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut result: Vec<Detection> = Vec::with_capacity(detections.len());
+
+    for det in detections.drain(..) {
+        let mut should_keep = true;
+        for kept in &result {
+            if iou(&det.bbox, &kept.bbox) > iou_threshold {
+                should_keep = false;
+                break;
+            }
+        }
+        if should_keep {
+            result.push(det);
+        }
+    }
+
+    *detections = result;
+}
+
+fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
+    let x1 = a[0].max(b[0]);
+    let y1 = a[1].max(b[1]);
+    let x2 = a[2].min(b[2]);
+    let y2 = a[3].min(b[3]);
+
+    let inter_w = (x2 - x1).max(0.0);
+    let inter_h = (y2 - y1).max(0.0);
+    let intersection = inter_w * inter_h;
+    if intersection <= 0.0 {
+        return 0.0;
+    }
+    let area_a = (a[2] - a[0]).max(0.0) * (a[3] - a[1]).max(0.0);
+    let area_b = (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
+    intersection / (area_a + area_b - intersection + 1e-6)
 }

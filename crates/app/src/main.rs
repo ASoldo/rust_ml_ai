@@ -39,11 +39,35 @@ use image::{DynamicImage, ImageBuffer, Rgba, codecs::jpeg::JpegEncoder};
 const ELEMENT_COUNT: usize = 16;
 
 #[cfg(feature = "with-tch")]
-type SharedFrame = Arc<Mutex<Option<Vec<u8>>>>;
+type SharedFrame = Arc<Mutex<Option<FramePacket>>>;
 
 #[cfg(feature = "with-tch")]
 struct ServerState {
     latest: SharedFrame,
+}
+
+#[cfg(feature = "with-tch")]
+#[cfg(feature = "with-tch")]
+#[derive(Clone)]
+struct FramePacket {
+    jpeg: Vec<u8>,
+    detections: Vec<DetectionSummary>,
+    timestamp_ms: i64,
+}
+
+#[cfg(feature = "with-tch")]
+#[derive(Clone, serde::Serialize)]
+struct DetectionSummary {
+    class: String,
+    score: f32,
+    bbox: [f32; 4],
+    track_id: i64,
+}
+
+#[cfg(feature = "with-tch")]
+#[derive(Default)]
+struct SimpleTracker {
+    next_id: i64,
 }
 
 fn main() {
@@ -247,6 +271,7 @@ fn run_vision_demo(args: &[String]) {
     };
 
     let shared = Arc::new(Mutex::new(None));
+    let tracker = Arc::new(Mutex::new(SimpleTracker::default()));
     if let Err(err) = spawn_preview_server(shared.clone()) {
         eprintln!("Failed to start preview server: {err}");
     } else {
@@ -269,10 +294,10 @@ fn run_vision_demo(args: &[String]) {
         match receiver.recv() {
             Ok(frame) => match frame {
                 Ok(frame) => {
-                    match process_frame(frame_index, &detector, &frame) {
-                        Ok(encoded) => {
+                    match process_frame(frame_index, &detector, &frame, &tracker) {
+                        Ok(packet) => {
                             if let Ok(mut guard) = shared.lock() {
-                                *guard = Some(encoded);
+                                *guard = Some(packet);
                             }
                         }
                         Err(err) => eprintln!("Frame processing error: {err}"),
@@ -298,7 +323,12 @@ fn run_vision_demo(args: &[String]) {
 }
 
 #[cfg(feature = "with-tch")]
-fn process_frame(index: usize, detector: &Detector, frame: &Frame) -> AnyResult<Vec<u8>> {
+fn process_frame(
+    index: usize,
+    detector: &Detector,
+    frame: &Frame,
+    tracker: &Arc<Mutex<SimpleTracker>>,
+) -> AnyResult<FramePacket> {
     let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
     let detections = detector.infer(&tensor)?;
     if detections.detections.is_empty() {
@@ -310,12 +340,12 @@ fn process_frame(index: usize, detector: &Detector, frame: &Frame) -> AnyResult<
         );
         for (idx, det) in detections.detections.iter().enumerate() {
             println!(
-                "  #{idx}: class={} conf={:.3} xywh={:?}",
-                det.class_id, det.score, det.bbox_xywh
+                "  #{idx}: class={} conf={:.3} bbox={:?}",
+                det.class_id, det.score, det.bbox
             );
         }
     }
-    annotate_frame(frame, &detections)
+    annotate_frame(frame, &detections, tracker)
 }
 
 #[cfg(feature = "with-tch")]
@@ -331,6 +361,7 @@ fn spawn_preview_server(shared: SharedFrame) -> std::io::Result<()> {
                     .route("/", web::get().to(index_route))
                     .route("/frame.jpg", web::get().to(frame_handler))
                     .route("/stream.mjpg", web::get().to(stream_handler))
+                    .route("/detections", web::get().to(detections_handler))
             })
             .bind(("0.0.0.0", 8080))?
             .run()
@@ -348,10 +379,10 @@ async fn frame_handler(state: web::Data<ServerState>) -> HttpResponse {
         Ok(guard) => guard,
         Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
     };
-    if let Some(ref data) = *guard {
+    if let Some(ref packet) = *guard {
         HttpResponse::Ok()
             .content_type("image/jpeg")
-            .body(data.clone())
+            .body(packet.jpeg.clone())
     } else {
         HttpResponse::NoContent().finish()
     }
@@ -369,10 +400,10 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
                 .lock()
                 .ok()
                 .and_then(|guard| guard.clone());
-            if let Some(frame) = frame {
-                let mut payload = Vec::with_capacity(frame.len() + 64);
+            if let Some(packet) = frame {
+                let mut payload = Vec::with_capacity(packet.jpeg.len() + 64);
                 payload.extend_from_slice(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n");
-                payload.extend_from_slice(&frame);
+                payload.extend_from_slice(&packet.jpeg);
                 payload.extend_from_slice(b"\r\n");
                 yield Ok::<Bytes, actix_web::Error>(Bytes::from(payload));
             }
@@ -395,27 +426,45 @@ async fn index_route() -> HttpResponse {
 }
 
 #[cfg(feature = "with-tch")]
-fn annotate_frame(frame: &Frame, detections: &DetectionBatch) -> AnyResult<Vec<u8>> {
+async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
+    let guard = match state.latest.lock() {
+        Ok(guard) => guard,
+        Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
+    };
+    if let Some(ref packet) = *guard {
+        #[derive(serde::Serialize)]
+        struct ResponsePayload<'a> {
+            timestamp_ms: i64,
+            detections: &'a [DetectionSummary],
+        }
+
+        HttpResponse::Ok().json(ResponsePayload {
+            timestamp_ms: packet.timestamp_ms,
+            detections: &packet.detections,
+        })
+    } else {
+        HttpResponse::NoContent().finish()
+    }
+}
+
+#[cfg(feature = "with-tch")]
+fn annotate_frame(
+    frame: &Frame,
+    detections: &DetectionBatch,
+    tracker: &Arc<Mutex<SimpleTracker>>,
+) -> AnyResult<FramePacket> {
     let width = frame.width as u32;
     let height = frame.height as u32;
     let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, frame.data.clone())
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
+    let mut summaries = Vec::with_capacity(detections.detections.len());
+
     for det in &detections.detections {
-        let (cx, cy, w, h) = (
-            det.bbox_xywh[0],
-            det.bbox_xywh[1],
-            det.bbox_xywh[2],
-            det.bbox_xywh[3],
-        );
-        let (mut left, mut top, mut right, mut bottom) =
-            (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-
-        left = left.clamp(0.0, (width - 1) as f32);
-        right = right.clamp(0.0, (width - 1) as f32);
-        top = top.clamp(0.0, (height - 1) as f32);
-        bottom = bottom.clamp(0.0, (height - 1) as f32);
-
+        let left = det.bbox[0].clamp(0.0, (width - 1) as f32);
+        let top = det.bbox[1].clamp(0.0, (height - 1) as f32);
+        let right = det.bbox[2].clamp(0.0, (width - 1) as f32);
+        let bottom = det.bbox[3].clamp(0.0, (height - 1) as f32);
         draw_rectangle(
             &mut image,
             left.round() as i32,
@@ -430,6 +479,13 @@ fn annotate_frame(frame: &Frame, detections: &DetectionBatch) -> AnyResult<Vec<u
             1 => "PERSON",
             _ => "OBJECT",
         };
+
+        summaries.push(DetectionSummary {
+            class: label.to_string(),
+            score: det.score,
+            bbox: [left, top, right, bottom],
+            track_id: 0,
+        });
 
         let label_x = left.round() as i32;
         let label_y = (top.round() as i32 - 12).max(0);
@@ -448,7 +504,13 @@ fn annotate_frame(frame: &Frame, detections: &DetectionBatch) -> AnyResult<Vec<u
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
     JpegEncoder::new_with_quality(&mut buffer, 85).encode_image(&rgb)?;
-    Ok(buffer)
+    assign_tracks(tracker, &mut summaries);
+
+    Ok(FramePacket {
+        jpeg: buffer,
+        detections: summaries,
+        timestamp_ms: frame.timestamp_ms,
+    })
 }
 
 #[cfg(feature = "with-tch")]
@@ -573,5 +635,15 @@ fn glyph_bits(ch: char) -> Option<[u8; 7]> {
         ]),
         ' ' => Some([0, 0, 0, 0, 0, 0, 0]),
         _ => None,
+    }
+}
+
+#[cfg(feature = "with-tch")]
+fn assign_tracks(tracker: &Arc<Mutex<SimpleTracker>>, detections: &mut [DetectionSummary]) {
+    if let Ok(mut tracker) = tracker.lock() {
+        for det in detections {
+            det.track_id = tracker.next_id;
+            tracker.next_id += 1;
+        }
     }
 }
