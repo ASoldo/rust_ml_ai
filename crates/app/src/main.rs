@@ -548,7 +548,7 @@ async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(
-            "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" /></body></html>",
+            "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" height=\"480\" /></body></html>",
         )
 }
 
