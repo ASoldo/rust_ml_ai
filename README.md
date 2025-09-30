@@ -140,14 +140,14 @@ Class probabilities:
    webcam), the TorchScript path, and the width/height you exported with:
 
    ```bash
-   cargo run -p cuda-app --features with-tch -- \
+   cargo run --release -p cuda-app --features with-tch -- \
       vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
    ```
   
   or
 
    ```bash
-   cargo run -p cuda-app --features with-tch -- \
+   cargo run --release -p cuda-app --features with-tch -- \
       vision-demo 0 models/yolov12n-face.torchscript 640 640 
    ```
 
