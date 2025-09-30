@@ -254,12 +254,15 @@ __device__ __forceinline__ void blend_pixel(
     if (x < 0 || x >= width || y < 0 || y >= height) {
         return;
     }
-    unsigned char* dst = image + ((size_t)y * width + x) * 4u;
+    unsigned char* dst = image + ((size_t)y * width + x) * 3u;
     const float alpha = (float)a / 255.0f;
-    dst[0] = (unsigned char)(alpha * (float)r + (1.0f - alpha) * (float)dst[0]);
-    dst[1] = (unsigned char)(alpha * (float)g + (1.0f - alpha) * (float)dst[1]);
-    dst[2] = (unsigned char)(alpha * (float)b + (1.0f - alpha) * (float)dst[2]);
-    dst[3] = 255u;
+    const float inv_alpha = 1.0f - alpha;
+    float db = (float)dst[0];
+    float dg = (float)dst[1];
+    float dr = (float)dst[2];
+    dst[0] = (unsigned char)(alpha * (float)b + inv_alpha * db);
+    dst[1] = (unsigned char)(alpha * (float)g + inv_alpha * dg);
+    dst[2] = (unsigned char)(alpha * (float)r + inv_alpha * dr);
 }
 
 __device__ void draw_text_line(

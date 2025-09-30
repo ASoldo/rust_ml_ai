@@ -813,6 +813,7 @@ name = "gpu-kernels"
 version = "0.1.0"
 dependencies = [
  "cudarc",
+ "nvjpeg-sys",
 ]
 
 [[package]]
@@ -1288,6 +1289,12 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
 ]
+
+[[package]]
+name = "nvjpeg-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e410abdcbb94c537194b0cb50b95c3692d4cf8d912f8fb026dba59b3709542"
 
 [[package]]
 name = "object"

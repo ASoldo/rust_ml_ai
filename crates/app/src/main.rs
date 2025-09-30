@@ -713,15 +713,9 @@ fn annotate_frame_gpu(
             (info_x, info_y),
         )
         .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
-
-    let rgba = guard
-        .download_rgba(width, height)
-        .map_err(|err| anyhow!("failed to download RGBA buffer: {err}"))?;
-    let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width as u32, height as u32, rgba)
-        .ok_or_else(|| anyhow!("failed to convert GPU RGBA image"))?;
-    let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
-    let mut buffer = Vec::new();
-    JpegEncoder::new_with_quality(&mut buffer, 70).encode_image(&rgb)?;
+    let buffer = guard
+        .encode_jpeg(width, height, 85)
+        .map_err(|err| anyhow!("nvjpeg encode failed: {err}"))?;
 
     Ok(FramePacket {
         jpeg: buffer,

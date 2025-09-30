@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::{ffi::c_int, ptr, sync::Arc};
 
 use cudarc::driver::PushKernelArg;
 use cudarc::driver::safe::{
     CudaContext, CudaFunction, CudaModule, CudaSlice, CudaStream, DevicePtr, LaunchConfig,
 };
 use cudarc::nvrtc::{self, Ptx};
+use nvjpeg_sys::*;
 
 use crate::Result;
 
@@ -18,7 +19,7 @@ pub struct VisionRuntime {
     nms_fn: CudaFunction,
     annotate_fn: CudaFunction,
     input_bgr: Option<CudaSlice<u8>>,
-    resized_rgba: Option<CudaSlice<u8>>,
+    resized_bgr: Option<CudaSlice<u8>>,
     tensor_buffer: Option<CudaSlice<f32>>,
     keep_flags: Option<CudaSlice<i32>>,
     boxes_scratch: Option<CudaSlice<i32>>,
@@ -27,6 +28,10 @@ pub struct VisionRuntime {
     label_lengths: Option<CudaSlice<i32>>,
     label_chars: Option<CudaSlice<u8>>,
     info_text: Option<CudaSlice<u8>>,
+    nvjpeg_handle: nvjpegHandle_t,
+    nvjpeg_encoder_state: nvjpegEncoderState_t,
+    nvjpeg_encoder_params: nvjpegEncoderParams_t,
+    jpeg_quality: c_int,
 }
 
 /// Result of the preprocessing stage.
@@ -47,6 +52,53 @@ impl VisionRuntime {
         let annotate_fn = module.load_function("annotate_overlays")?;
         let stream = context.default_stream();
 
+        let stream_ptr = stream.cu_stream() as cudaStream_t;
+        let mut nv_handle: nvjpegHandle_t = ptr::null_mut();
+        Self::check_nvjpeg(
+            unsafe { nvjpegCreateSimple(&mut nv_handle) },
+            "nvjpegCreateSimple",
+        )?;
+
+        let mut encoder_state: nvjpegEncoderState_t = ptr::null_mut();
+        Self::check_nvjpeg(
+            unsafe { nvjpegEncoderStateCreate(nv_handle, &mut encoder_state, stream_ptr) },
+            "nvjpegEncoderStateCreate",
+        )?;
+
+        let mut encoder_params: nvjpegEncoderParams_t = ptr::null_mut();
+        Self::check_nvjpeg(
+            unsafe { nvjpegEncoderParamsCreate(nv_handle, &mut encoder_params, stream_ptr) },
+            "nvjpegEncoderParamsCreate",
+        )?;
+
+        let default_quality: c_int = 85;
+        unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncoderParamsSetEncoding(
+                    encoder_params,
+                    nvjpegJpegEncoding_t_NVJPEG_ENCODING_BASELINE_DCT,
+                    stream_ptr,
+                ),
+                "nvjpegEncoderParamsSetEncoding",
+            )?;
+            Self::check_nvjpeg(
+                nvjpegEncoderParamsSetSamplingFactors(
+                    encoder_params,
+                    nvjpegChromaSubsampling_t_NVJPEG_CSS_444,
+                    stream_ptr,
+                ),
+                "nvjpegEncoderParamsSetSamplingFactors",
+            )?;
+            Self::check_nvjpeg(
+                nvjpegEncoderParamsSetOptimizedHuffman(encoder_params, 1, stream_ptr),
+                "nvjpegEncoderParamsSetOptimizedHuffman",
+            )?;
+            Self::check_nvjpeg(
+                nvjpegEncoderParamsSetQuality(encoder_params, default_quality, stream_ptr),
+                "nvjpegEncoderParamsSetQuality",
+            )?;
+        }
+
         Ok(Self {
             device_index,
             _context: context,
@@ -56,7 +108,7 @@ impl VisionRuntime {
             nms_fn,
             annotate_fn,
             input_bgr: None,
-            resized_rgba: None,
+            resized_bgr: None,
             tensor_buffer: None,
             keep_flags: None,
             boxes_scratch: None,
@@ -65,13 +117,97 @@ impl VisionRuntime {
             label_lengths: None,
             label_chars: None,
             info_text: None,
+            nvjpeg_handle: nv_handle,
+            nvjpeg_encoder_state: encoder_state,
+            nvjpeg_encoder_params: encoder_params,
+            jpeg_quality: default_quality,
         })
+    }
+
+    pub fn encode_jpeg(&mut self, width: i32, height: i32, quality: c_int) -> Result<Vec<u8>> {
+        if self.resized_bgr.is_none() {
+            return Err("no annotated frame available".into());
+        }
+
+        let stream_ptr = self.stream.cu_stream() as cudaStream_t;
+
+        if quality != self.jpeg_quality {
+            unsafe {
+                Self::check_nvjpeg(
+                    nvjpegEncoderParamsSetQuality(self.nvjpeg_encoder_params, quality, stream_ptr),
+                    "nvjpegEncoderParamsSetQuality",
+                )?;
+            }
+            self.jpeg_quality = quality;
+        }
+
+        let bgr = self.resized_bgr.as_ref().unwrap();
+        let (device_ptr, device_sync) = bgr.device_ptr(&self.stream);
+        let mut image = nvjpegImage_t::new();
+        image.channel[0] = (device_ptr as usize) as *mut ::std::os::raw::c_uchar;
+        image.pitch[0] = (width as usize) * 3;
+
+        unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncodeImage(
+                    self.nvjpeg_handle,
+                    self.nvjpeg_encoder_state,
+                    self.nvjpeg_encoder_params,
+                    &image,
+                    nvjpegInputFormat_t_NVJPEG_INPUT_BGR,
+                    width,
+                    height,
+                    stream_ptr,
+                ),
+                "nvjpegEncodeImage",
+            )?;
+        }
+        drop(device_sync);
+
+        let mut length: usize = 0;
+        unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncodeRetrieveBitstream(
+                    self.nvjpeg_handle,
+                    self.nvjpeg_encoder_state,
+                    ptr::null_mut(),
+                    &mut length,
+                    stream_ptr,
+                ),
+                "nvjpegEncodeRetrieveBitstream(size)",
+            )?;
+        }
+
+        let mut output = vec![0u8; length];
+        unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncodeRetrieveBitstream(
+                    self.nvjpeg_handle,
+                    self.nvjpeg_encoder_state,
+                    output.as_mut_ptr(),
+                    &mut length,
+                    stream_ptr,
+                ),
+                "nvjpegEncodeRetrieveBitstream(data)",
+            )?;
+        }
+        output.truncate(length);
+        self.stream.synchronize()?;
+        Ok(output)
     }
 
     fn build_ptx() -> Result<Ptx> {
         const SOURCE: &str = include_str!("vision_kernels.cu");
         nvrtc::compile_ptx(SOURCE)
             .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
+    }
+
+    fn check_nvjpeg(status: nvjpegStatus_t, label: &str) -> Result<()> {
+        if status == nvjpegStatus_t_NVJPEG_STATUS_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!("{label} failed with status {status}").into())
+        }
     }
 
     fn ensure_input_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
@@ -86,14 +222,14 @@ impl VisionRuntime {
     }
 
     fn ensure_resized_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
-        let needs = match self.resized_rgba {
+        let needs = match self.resized_bgr {
             Some(ref buf) if buf.len() >= len => false,
             _ => true,
         };
         if needs {
-            self.resized_rgba = Some(self.stream.alloc_zeros::<u8>(len)?);
+            self.resized_bgr = Some(self.stream.alloc_zeros::<u8>(len)?);
         }
-        Ok(self.resized_rgba.as_mut().unwrap())
+        Ok(self.resized_bgr.as_mut().unwrap())
     }
 
     fn ensure_tensor_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<f32>> {
@@ -193,13 +329,13 @@ impl VisionRuntime {
         out_width: i32,
         out_height: i32,
     ) -> Result<PreprocessOutput> {
-        let num_pixels_in = bgr.len();
+        let num_bytes_in = bgr.len();
         let num_pixels_out = (out_width * out_height) as usize;
         let tensor_len = num_pixels_out * 3;
-        let rgba_out_len = num_pixels_out * 4;
+        let bgr_out_bytes = num_pixels_out * 3;
 
-        self.ensure_input_buffer(num_pixels_in)?;
-        self.ensure_resized_buffer(rgba_out_len)?;
+        self.ensure_input_buffer(num_bytes_in)?;
+        self.ensure_resized_buffer(bgr_out_bytes)?;
         self.ensure_tensor_buffer(tensor_len)?;
 
         let stream = self.stream.clone();
@@ -216,7 +352,7 @@ impl VisionRuntime {
             tensor.as_view_mut()
         };
         let mut output_view = {
-            let output = self.resized_rgba.as_mut().unwrap();
+            let output = self.resized_bgr.as_mut().unwrap();
             output.as_view_mut()
         };
 
@@ -292,7 +428,7 @@ impl VisionRuntime {
         info_text: &[u8],
         info_origin: (i32, i32),
     ) -> Result<()> {
-        if self.resized_rgba.is_none() {
+        if self.resized_bgr.is_none() {
             return Ok(());
         }
 
@@ -332,7 +468,7 @@ impl VisionRuntime {
         }
 
         let mut output_view = {
-            let output = self.resized_rgba.as_mut().unwrap();
+            let output = self.resized_bgr.as_mut().unwrap();
             output.as_view_mut()
         };
         let boxes_view = self.boxes_scratch.as_ref().unwrap().as_view();
@@ -370,10 +506,10 @@ impl VisionRuntime {
         Ok(())
     }
 
-    /// Downloads the resized RGBA frame into host memory.
-    pub fn download_rgba(&self, width: i32, height: i32) -> Result<Vec<u8>> {
-        let len = (width as usize) * (height as usize) * 4;
-        if let Some(ref buf) = self.resized_rgba {
+    /// Downloads the resized BGR frame into host memory.
+    pub fn download_bgr(&self, width: i32, height: i32) -> Result<Vec<u8>> {
+        let len = (width as usize) * (height as usize) * 3;
+        if let Some(ref buf) = self.resized_bgr {
             let mut host = vec![0u8; len];
             self.stream.memcpy_dtoh(buf, host.as_mut_slice())?;
             self.stream.synchronize()?;
@@ -385,5 +521,24 @@ impl VisionRuntime {
 
     pub fn device_index(&self) -> i32 {
         self.device_index
+    }
+}
+
+impl Drop for VisionRuntime {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.nvjpeg_encoder_params.is_null() {
+                let _ = nvjpegEncoderParamsDestroy(self.nvjpeg_encoder_params);
+                self.nvjpeg_encoder_params = ptr::null_mut();
+            }
+            if !self.nvjpeg_encoder_state.is_null() {
+                let _ = nvjpegEncoderStateDestroy(self.nvjpeg_encoder_state);
+                self.nvjpeg_encoder_state = ptr::null_mut();
+            }
+            if !self.nvjpeg_handle.is_null() {
+                let _ = nvjpegDestroy(self.nvjpeg_handle);
+                self.nvjpeg_handle = ptr::null_mut();
+            }
+        }
     }
 }
