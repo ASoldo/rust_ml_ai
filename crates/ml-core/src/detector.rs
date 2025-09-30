@@ -1,6 +1,11 @@
-use std::{convert::TryFrom, path::Path};
+use std::{
+    convert::TryFrom,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use gpu_kernels::{PreprocessOutput, VisionRuntime};
 use tch::{self, Device, Kind, Tensor};
 
 /// Single detection returned by the detector.
@@ -24,6 +29,7 @@ pub struct Detector {
     device: Device,
     input_size: (i64, i64),
     confidence_threshold: f32,
+    vision: Option<Arc<Mutex<VisionRuntime>>>,
 }
 
 impl Detector {
@@ -34,11 +40,22 @@ impl Detector {
         input_size: (i64, i64),
     ) -> Result<Self> {
         let module = tch::CModule::load_on_device(model_path, device)?;
+        let vision = match device {
+            Device::Cuda(index) => {
+                let device_index = i32::try_from(index)
+                    .map_err(|_| anyhow!("CUDA device index {index} is out of range for i32"))?;
+                let runtime = VisionRuntime::new(device_index)
+                    .map_err(|err| anyhow!("failed to initialise vision runtime: {err}"))?;
+                Some(Arc::new(Mutex::new(runtime)))
+            }
+            _ => None,
+        };
         Ok(Self {
             module,
             device,
             input_size,
             confidence_threshold: 0.25,
+            vision,
         })
     }
 
@@ -46,6 +63,10 @@ impl Detector {
     pub fn with_confidence_threshold(mut self, confidence: f32) -> Self {
         self.confidence_threshold = confidence;
         self
+    }
+
+    pub fn input_size(&self) -> (i64, i64) {
+        self.input_size
     }
 
     /// Converts an RGBA frame (height, width) into a normalized tensor ready for inference.
@@ -59,23 +80,46 @@ impl Detector {
             );
         }
 
-        let (in_w, in_h) = self.input_size;
+        if let (Device::Cuda(_), Some(runtime)) = (&self.device, &self.vision) {
+            let (target_w, target_h) = (self.input_size.0 as i32, self.input_size.1 as i32);
+            let mut guard = runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("vision runtime poisoned"))?;
+            let PreprocessOutput {
+                tensor_ptr,
+                width: out_w,
+                height: out_h,
+                ..
+            } = guard
+                .preprocess_rgba(rgba, width, height, target_w, target_h)
+                .map_err(|err| anyhow!("preprocess kernel failed: {err}"))?;
+            let size = [1, 3, out_h as i64, out_w as i64];
+            let tensor = unsafe {
+                Tensor::from_blob(
+                    tensor_ptr as *const u8,
+                    &size,
+                    &[],
+                    Kind::Float,
+                    self.device,
+                )
+            };
+            Ok(tensor)
+        } else {
+            let (in_w, in_h) = self.input_size;
+            let mut tensor = Tensor::from_slice(rgba)
+                .to_kind(Kind::Float)
+                .view([height as i64, width as i64, 4])
+                .narrow(2, 0, 3)
+                .permute([2, 0, 1])
+                .unsqueeze(0)
+                / 255.0;
 
-        let mut tensor = Tensor::from_slice(rgba)
-            .to_kind(Kind::Float)
-            .view([height as i64, width as i64, 4])
-            .narrow(2, 0, 3)
-            .permute([2, 0, 1])
-            .unsqueeze(0)
-            / 255.0;
+            if (width as i64, height as i64) != (in_w, in_h) {
+                tensor = tensor.upsample_bilinear2d(&[in_h, in_w], false, None, None);
+            }
 
-        if (width as i64, height as i64) != (in_w, in_h) {
-            tensor = tensor.upsample_bilinear2d(&[in_h, in_w], false, None, None);
+            Ok(tensor.to_device(self.device))
         }
-
-        let tensor = tensor.to_device(self.device);
-
-        Ok(tensor)
     }
 
     /// Executes the TorchScript module and performs basic confidence filtering.
@@ -97,21 +141,103 @@ impl Detector {
             );
         }
 
-        let preds = output
-            .to_device(Device::Cpu)
-            .squeeze_dim(0)
-            .permute([1, 0])
-            .contiguous();
+        let preds = output.squeeze_dim(0).permute([1, 0]).contiguous();
 
-        let rows: Vec<Vec<f32>> = Vec::<Vec<f32>>::try_from(&preds)?;
+        let detections = match self.device {
+            Device::Cuda(_) => {
+                if let Some(rows) = self.process_gpu(preds)? {
+                    self.rows_to_detections(rows, false)?
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => {
+                let rows: Vec<Vec<f32>> = Vec::<Vec<f32>>::try_from(&preds.to_device(Device::Cpu))?;
+                let mut detections = self.rows_to_detections(rows, true)?;
+                apply_nms(&mut detections, 0.45);
+                detections
+            }
+        };
 
+        Ok(DetectionBatch { detections })
+    }
+
+    fn process_gpu(&self, preds: Tensor) -> Result<Option<Vec<Vec<f32>>>> {
+        let device = self.device;
+        if !matches!(device, Device::Cuda(_)) {
+            return Ok(None);
+        }
+        let scores = preds.select(1, 4);
+        let mask = scores.ge(self.confidence_threshold as f64);
+        let mut indices = mask.nonzero();
+        if indices.numel() == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        indices = indices.squeeze_dim(1);
+        let filtered = preds.index_select(0, &indices);
+        let scores = filtered.select(1, 4);
+        let mut order = scores.argsort(-1, true);
+        if order.dim() == 0 {
+            order = order.unsqueeze(0);
+        }
+        let mut ordered = filtered.index_select(0, &order);
+        let limit = ordered.size()[0].min(512);
+        ordered = ordered.narrow(0, 0, limit);
+
+        if limit == 0 {
+            return Ok(Some(Vec::new()));
+        }
+
+        let xs = ordered.select(1, 0);
+        let ys = ordered.select(1, 1);
+        let ws = ordered.select(1, 2);
+        let hs = ordered.select(1, 3);
+        let half_w = &ws / 2.0;
+        let half_h = &hs / 2.0;
+        let x1 = &xs - &half_w;
+        let y1 = &ys - &half_h;
+        let x2 = &xs + &half_w;
+        let y2 = &ys + &half_h;
+        let boxes = Tensor::stack(&[x1, y1, x2, y2], 1).contiguous();
+        let num_boxes = boxes.size()[0] as usize;
+
+        let boxes_ptr = boxes.data_ptr() as u64;
+        if let Some(runtime) = &self.vision {
+            let mut guard = runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("vision runtime poisoned"))?;
+            let keep_flags = guard
+                .run_nms(boxes_ptr, num_boxes, 0.45)
+                .map_err(|err| anyhow!("nms kernel failed: {err}"))?;
+            let kept_indices: Vec<i64> = keep_flags
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, &flag)| (flag != 0).then_some(idx as i64))
+                .collect();
+            if kept_indices.is_empty() {
+                return Ok(Some(Vec::new()));
+            }
+            let index_tensor = Tensor::from_slice(&kept_indices).to_device(device);
+            let selected = ordered.index_select(0, &index_tensor);
+            let rows: Vec<Vec<f32>> = Vec::<Vec<f32>>::try_from(&selected.to_device(Device::Cpu))?;
+            Ok(Some(rows))
+        } else {
+            Ok(Some(Vec::new()))
+        }
+    }
+
+    fn rows_to_detections(
+        &self,
+        rows: Vec<Vec<f32>>,
+        apply_threshold: bool,
+    ) -> Result<Vec<Detection>> {
         let mut detections = Vec::new();
         for row in rows {
             if row.len() < 5 {
                 continue;
             }
             let score = row[4];
-            if score < self.confidence_threshold {
+            if apply_threshold && score < self.confidence_threshold {
                 continue;
             }
             let bbox = xywh_to_corners(row[0], row[1], row[2], row[3], self.input_size);
@@ -125,10 +251,11 @@ impl Detector {
                 break;
             }
         }
+        Ok(detections)
+    }
 
-        apply_nms(&mut detections, 0.45);
-
-        Ok(DetectionBatch { detections })
+    pub fn vision_runtime(&self) -> Option<Arc<Mutex<VisionRuntime>>> {
+        self.vision.clone()
     }
 }
 

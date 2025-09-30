@@ -16,6 +16,9 @@ use ml_core::{
 };
 
 #[cfg(feature = "with-tch")]
+use gpu_kernels::VisionRuntime;
+
+#[cfg(feature = "with-tch")]
 use video_ingest::{self, Frame};
 
 #[cfg(feature = "with-tch")]
@@ -325,6 +328,7 @@ fn run_vision_demo(args: &[String]) {
                         &frame,
                         &tracker,
                         verbose,
+                        detector.vision_runtime(),
                     ) {
                         Ok(packet) => {
                             if let Ok(mut guard) = shared.lock() {
@@ -364,6 +368,7 @@ fn process_frame(
     frame: &Frame,
     tracker: &Arc<Mutex<SimpleTracker>>,
     verbose: bool,
+    vision: Option<Arc<Mutex<VisionRuntime>>>,
 ) -> AnyResult<FramePacket> {
     let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
     let detections = detector.infer(&tensor)?;
@@ -383,7 +388,73 @@ fn process_frame(
             }
         }
     }
-    annotate_frame(frame, &detections, frame_number, fps, tracker)
+    let mut summaries = Vec::with_capacity(detections.detections.len());
+    let mut label_positions = Vec::with_capacity(detections.detections.len());
+    let mut boxes_px = Vec::with_capacity(detections.detections.len());
+
+    for det in &detections.detections {
+        let left = det.bbox[0].clamp(0.0, (frame.width - 1) as f32);
+        let top = det.bbox[1].clamp(0.0, (frame.height - 1) as f32);
+        let right = det.bbox[2].clamp(0.0, (frame.width - 1) as f32);
+        let bottom = det.bbox[3].clamp(0.0, (frame.height - 1) as f32);
+
+        let left_i = left.round() as i32;
+        let top_i = top.round() as i32;
+        let right_i = right.round() as i32;
+        let bottom_i = bottom.round() as i32;
+
+        boxes_px.push([left_i, top_i, right_i, bottom_i]);
+        label_positions.push((left_i, (top_i - 12).max(0)));
+
+        let label = match det.class_id {
+            0 => "FACE",
+            1 => "PERSON",
+            _ => "OBJECT",
+        };
+
+        summaries.push(DetectionSummary {
+            class: label.to_string(),
+            score: det.score,
+            bbox: [left, top, right, bottom],
+            track_id: 0,
+        });
+    }
+
+    assign_tracks(tracker, &mut summaries);
+
+    if let Some(runtime) = vision {
+        let labels: Vec<String> = summaries
+            .iter()
+            .map(|summary| {
+                format!(
+                    "{} {} {:.0}%",
+                    summary.class,
+                    summary.track_id,
+                    summary.score * 100.0
+                )
+            })
+            .collect();
+        annotate_frame_gpu(
+            &runtime,
+            frame,
+            frame_number,
+            fps,
+            summaries.clone(),
+            &boxes_px,
+            &label_positions,
+            &labels,
+        )
+    } else {
+        annotate_frame_cpu(
+            frame,
+            DetectionBatch {
+                detections: detections.detections,
+            },
+            frame_number,
+            fps,
+            summaries,
+        )
+    }
 }
 
 #[cfg(feature = "with-tch")]
@@ -490,19 +561,18 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
 }
 
 #[cfg(feature = "with-tch")]
-fn annotate_frame(
+fn annotate_frame_cpu(
     frame: &Frame,
-    detections: &DetectionBatch,
+    detections: DetectionBatch,
     frame_number: u64,
     fps: f32,
-    tracker: &Arc<Mutex<SimpleTracker>>,
+    summaries: Vec<DetectionSummary>,
 ) -> AnyResult<FramePacket> {
     let width = frame.width as u32;
     let height = frame.height as u32;
     let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, frame.data.clone())
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
-    let mut summaries = Vec::with_capacity(detections.detections.len());
     let mut label_positions = Vec::with_capacity(detections.detections.len());
 
     for det in &detections.detections {
@@ -519,23 +589,8 @@ fn annotate_frame(
             Rgba([0, 255, 0, 255]),
         );
 
-        let label = match det.class_id {
-            0 => "FACE",
-            1 => "PERSON",
-            _ => "OBJECT",
-        };
-
         label_positions.push((left, top));
-
-        summaries.push(DetectionSummary {
-            class: label.to_string(),
-            score: det.score,
-            bbox: [left, top, right, bottom],
-            track_id: 0,
-        });
     }
-
-    assign_tracks(tracker, &mut summaries);
 
     for (summary, (left, top)) in summaries.iter().zip(label_positions.iter()) {
         let label_text = format!(
@@ -584,6 +639,82 @@ fn annotate_frame(
         Rgba([255, 255, 255, 255]),
     );
 
+    let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
+    let mut buffer = Vec::new();
+    JpegEncoder::new_with_quality(&mut buffer, 70).encode_image(&rgb)?;
+
+    Ok(FramePacket {
+        jpeg: buffer,
+        detections: summaries,
+        timestamp_ms: frame.timestamp_ms,
+        frame_number,
+        fps,
+    })
+}
+
+#[cfg(feature = "with-tch")]
+fn annotate_frame_gpu(
+    runtime: &Arc<Mutex<VisionRuntime>>,
+    frame: &Frame,
+    frame_number: u64,
+    fps: f32,
+    summaries: Vec<DetectionSummary>,
+    boxes: &[[i32; 4]],
+    label_positions: &[(i32, i32)],
+    label_texts: &[String],
+) -> AnyResult<FramePacket> {
+    let width = frame.width;
+    let height = frame.height;
+
+    let mut guard = runtime
+        .lock()
+        .map_err(|_| anyhow!("vision runtime poisoned"))?;
+
+    let mut boxes_flat = Vec::with_capacity(boxes.len() * 4);
+    for b in boxes {
+        boxes_flat.extend_from_slice(b);
+    }
+
+    let mut label_positions_flat = Vec::with_capacity(label_positions.len() * 2);
+    for (x, y) in label_positions {
+        label_positions_flat.push(*x);
+        label_positions_flat.push(*y);
+    }
+
+    let mut offsets = Vec::with_capacity(label_texts.len());
+    let mut lengths = Vec::with_capacity(label_texts.len());
+    let mut chars = Vec::new();
+    for text in label_texts {
+        offsets.push(chars.len() as i32);
+        let upper = text.to_uppercase();
+        chars.extend_from_slice(upper.as_bytes());
+        lengths.push(upper.len() as i32);
+    }
+
+    let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps).to_uppercase();
+    let info_width = ((info.chars().count() as i32) * 6).min(width as i32);
+    let info_x = (width as i32 - info_width - 4).max(0);
+    let info_y = (height as i32 - 12).max(0);
+
+    guard
+        .annotate(
+            width,
+            height,
+            &boxes_flat,
+            &label_positions_flat,
+            &offsets,
+            &lengths,
+            &chars,
+            info.as_bytes(),
+            (info_x, info_y),
+        )
+        .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
+
+    let rgba = guard
+        .download_rgba(width, height)
+        .map_err(|err| anyhow!("failed to download RGBA buffer: {err}"))?;
+    let image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width as u32, height as u32, rgba)
+        .ok_or_else(|| anyhow!("failed to convert GPU RGBA image"))?;
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
     JpegEncoder::new_with_quality(&mut buffer, 70).encode_image(&rgb)?;

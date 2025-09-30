@@ -1206,6 +1206,7 @@ name = "ml-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpu-kernels",
  "image",
  "once_cell",
  "tch",

@@ -1,6 +1,6 @@
 use std::thread;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use opencv::{
@@ -53,15 +53,7 @@ fn capture_loop(
     target_size: (i32, i32),
     tx: Sender<Result<Frame, CaptureError>>,
 ) -> Result<(), CaptureError> {
-    let mut cap = VideoCapture::from_file(uri, videoio::CAP_ANY)
-        .with_context(|| format!("initializing capture for {uri}"))
-        .map_err(CaptureError::Other)?;
-
-    if !cap.is_opened().map_err(|e| CaptureError::Other(e.into()))? {
-        return Err(CaptureError::Open {
-            uri: uri.to_string(),
-        });
-    }
+    let mut cap = open_video_capture(uri)?;
 
     configure_camera(&mut cap, target_size, 60.0);
 
@@ -134,6 +126,56 @@ fn capture_loop(
     }
 
     Ok(())
+}
+
+fn parse_device_index(uri: &str) -> Option<i32> {
+    if let Ok(index) = uri.parse::<i32>() {
+        return Some(index);
+    }
+    if let Some(stripped) = uri.strip_prefix("/dev/video") {
+        if stripped.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(index) = stripped.parse::<i32>() {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn open_video_capture(uri: &str) -> Result<VideoCapture, CaptureError> {
+    if let Some(index) = parse_device_index(uri) {
+        for backend in [videoio::CAP_V4L, videoio::CAP_ANY] {
+            match VideoCapture::new(index, backend) {
+                Ok(cap) => {
+                    if cap.is_opened().map_err(|e| CaptureError::Other(e.into()))? {
+                        return Ok(cap);
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "video-ingest: failed to open device #{index} with backend {backend}: {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    for backend in [videoio::CAP_V4L, videoio::CAP_ANY] {
+        match VideoCapture::from_file(uri, backend) {
+            Ok(cap) => {
+                if cap.is_opened().map_err(|e| CaptureError::Other(e.into()))? {
+                    return Ok(cap);
+                }
+            }
+            Err(err) => {
+                eprintln!("video-ingest: failed to open {uri} with backend {backend}: {err}");
+            }
+        }
+    }
+
+    Err(CaptureError::Open {
+        uri: uri.to_string(),
+    })
 }
 
 fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {

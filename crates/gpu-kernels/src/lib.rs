@@ -2,6 +2,9 @@ use cudarc::driver::{CudaContext, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use std::{error::Error, fmt, result::Result as StdResult};
 
+pub mod vision;
+pub use vision::{PreprocessOutput, VisionRuntime};
+
 /// Convenient result alias for GPU operations.
 pub type Result<T> = StdResult<T, Box<dyn Error + Send + Sync>>;
 
