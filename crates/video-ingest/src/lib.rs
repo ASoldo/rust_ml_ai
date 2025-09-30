@@ -1,6 +1,10 @@
-use std::thread;
+use std::{
+    io::Read,
+    process::{Child, Command, Stdio},
+    thread,
+};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use opencv::{
@@ -46,6 +50,70 @@ pub fn spawn_camera_reader(
 
     thread::spawn(move || {
         if let Err(err) = capture_loop(&uri, target_size, tx.clone()) {
+            let _ = tx.send(Err(err));
+        }
+    });
+
+    Ok(rx)
+}
+
+/// Spawns an FFmpeg process that uses NVDEC (via CUDA) to decode an H.264 stream and
+/// yields BGR8 frames via a background thread.
+pub fn spawn_nvdec_h264_reader(
+    uri: &str,
+    target_size: (i32, i32),
+) -> Result<Receiver<Result<Frame, CaptureError>>> {
+    let (tx, rx) = bounded(2);
+    let uri = uri.to_string();
+    let scale_arg = format!("scale={}:{}", target_size.0, target_size.1);
+
+    let (is_v4l, ffmpeg_uri) = if let Some(index) = parse_device_index(&uri) {
+        (true, format!("/dev/video{index}"))
+    } else if uri.starts_with("/dev/video") {
+        (true, uri.clone())
+    } else {
+        (false, uri.clone())
+    };
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-hwaccel")
+        .arg("cuda")
+        .arg("-hwaccel_output_format")
+        .arg("cuda")
+        .arg("-c:v")
+        .arg("h264_cuvid")
+        .stderr(Stdio::inherit());
+
+    if is_v4l {
+        cmd.arg("-f")
+            .arg("video4linux2")
+            .arg("-input_format")
+            .arg("h264");
+    }
+
+    cmd.arg("-i")
+        .arg(&ffmpeg_uri)
+        .arg("-vf")
+        .arg(&scale_arg)
+        .arg("-pix_fmt")
+        .arg("bgr24")
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("-")
+        .stdout(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|err| CaptureError::Other(err.into()))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CaptureError::Other(anyhow!("failed to capture ffmpeg stdout")))?;
+
+    thread::spawn(move || {
+        if let Err(err) = nvdec_loop(stdout, child, target_size, tx.clone()) {
             let _ = tx.send(Err(err));
         }
     });
@@ -186,4 +254,43 @@ fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
     let _ = cap.set(videoio::CAP_PROP_FRAME_WIDTH, target_size.0 as f64);
     let _ = cap.set(videoio::CAP_PROP_FRAME_HEIGHT, target_size.1 as f64);
     let _ = cap.set(videoio::CAP_PROP_FPS, fps);
+}
+
+fn nvdec_loop(
+    mut stdout: impl Read,
+    mut child: Child,
+    target_size: (i32, i32),
+    tx: Sender<Result<Frame, CaptureError>>,
+) -> Result<(), CaptureError> {
+    let frame_bytes = (target_size.0 as usize) * (target_size.1 as usize) * 3;
+    let mut buffer = vec![0u8; frame_bytes];
+
+    loop {
+        match stdout.read_exact(&mut buffer) {
+            Ok(()) => {
+                let timestamp_ms = Utc::now().timestamp_millis();
+                if tx
+                    .send(Ok(Frame {
+                        data: buffer.clone(),
+                        width: target_size.0,
+                        height: target_size.1,
+                        timestamp_ms,
+                        format: FrameFormat::Bgr8,
+                    }))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(err) => {
+                if tx.send(Err(CaptureError::Other(err.into()))).is_err() {
+                    break;
+                }
+                break;
+            }
+        }
+    }
+
+    let _ = child.kill();
+    Ok(())
 }

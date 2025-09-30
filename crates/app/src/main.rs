@@ -223,7 +223,7 @@ fn print_mnist_help() {
         "  mnist-predict <model-path> <image-path> [--cpu]\n      Load a trained model and classify a 28x28 grayscale image."
     );
     println!(
-        "  vision-demo <camera-uri> <model-path> <width> <height> [--cpu]\n      Stream frames from the camera and run the TorchScript detector (stubbed)."
+        "  vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose]\n      Stream frames, run the detector, opt into CPU fallback or NVDEC capture."
     );
     println!("  mnist-help\n      Show this message.");
 }
@@ -232,7 +232,7 @@ fn print_mnist_help() {
 fn run_vision_demo(args: &[String]) {
     if args.len() < 6 {
         eprintln!(
-            "Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu]"
+            "Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose]"
         );
         return;
     }
@@ -255,6 +255,11 @@ fn run_vision_demo(args: &[String]) {
     };
     let verbose = args.iter().any(|arg| arg == "--verbose");
     let use_cpu = args.iter().any(|arg| arg == "--cpu");
+    let use_nvdec = args.iter().any(|arg| arg == "--nvdec");
+    if use_cpu && use_nvdec {
+        eprintln!("--cpu and --nvdec are mutually exclusive");
+        return;
+    }
     let device = if use_cpu {
         Device::Cpu
     } else {
@@ -269,11 +274,21 @@ fn run_vision_demo(args: &[String]) {
         }
     };
 
-    let receiver = match video_ingest::spawn_camera_reader(&camera_uri, (width, height)) {
-        Ok(rx) => rx,
-        Err(err) => {
-            eprintln!("Failed to start capture: {err}");
-            return;
+    let receiver = if use_nvdec {
+        match video_ingest::spawn_nvdec_h264_reader(&camera_uri, (width, height)) {
+            Ok(rx) => rx,
+            Err(err) => {
+                eprintln!("Failed to start NVDEC capture: {err}");
+                return;
+            }
+        }
+    } else {
+        match video_ingest::spawn_camera_reader(&camera_uri, (width, height)) {
+            Ok(rx) => rx,
+            Err(err) => {
+                eprintln!("Failed to start capture: {err}");
+                return;
+            }
         }
     };
 

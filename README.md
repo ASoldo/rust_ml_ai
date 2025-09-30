@@ -143,15 +143,16 @@ Class probabilities:
    cargo run --release -p cuda-app --features with-tch -- \
       vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
    ```
-  
-  or
+
+   Drop `--cpu` to use CUDA inference. If your camera outputs H.264 you can let
+   FFmpeg+NVDEC handle decode with:
 
    ```bash
    cargo run --release -p cuda-app --features with-tch -- \
-      vision-demo 0 models/yolov12n-face.torchscript 640 640 
+      vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
    ```
 
-   Drop `--cpu` to use CUDA inference once you're ready. The current pipeline
+   (Requires an FFmpeg build with CUDA/NVDEC support.) The current pipeline
    logs raw YOLO-style detections (`[x, y, w, h]` centers in the 640×640 input
    space plus confidence):
 
@@ -187,6 +188,10 @@ Class probabilities:
 - The final JPEG bitstream is produced with `nvJPEG` on the same CUDA stream, so
   the CPU simply pushes the encoded bytes to the HTTP endpoints. The legacy CPU
   path still exists and can be forced with `--cpu` for machines without CUDA.
+- Passing `--nvdec` spawns an FFmpeg helper process configured with
+  `h264_cuvid`, letting NVDEC handle hardware H.264 decode before frames enter
+  the CUDA preprocessing path. Without the flag the capture thread uses MJPEG
+  via V4L as before.
 
 ### nvJPEG runtime requirement
 
@@ -204,6 +209,14 @@ export LIBTORCH_BYPASS_VERSION_CHECK=1
 # Optional: Nsight tools in PATH if you profile
 export PATH=$PATH:/opt/nsight-systems/2025.3.2/target-linux-x64:/opt/nsight-compute/2025.3.1
 ```
+
+For `--nvdec` you also need an FFmpeg build with CUDA/NVDEC enabled (Arch's
+`ffmpeg` package ships with it).
+
+- NVDEC capture is only meaningful when the device actually streams H.264. Use
+  `v4l2-ctl --device=/dev/video0 --list-formats-ext` to confirm the available
+  formats. If the camera only advertises `MJPG`/`YUYV`, the `--nvdec` flag will
+  fail—stick with the default MJPEG path in that case.
 
 ### Remaining CPU hotspots
 
