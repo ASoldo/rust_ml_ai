@@ -291,26 +291,25 @@ fn run_vision_demo(args: &[String]) {
 
     println!("Running vision demo — press Ctrl+C to stop");
     let mut frame_number: u64 = 0;
-    let mut last_timestamp: Option<i64> = None;
     let mut smoothed_fps: f32 = 0.0;
+    let mut last_instant = std::time::Instant::now();
 
     while running.load(Ordering::Relaxed) {
         match receiver.recv() {
             Ok(frame) => match frame {
                 Ok(frame) => {
                     frame_number = frame_number.wrapping_add(1);
-                    if let Some(prev) = last_timestamp {
-                        let delta = frame.timestamp_ms - prev;
-                        if delta > 0 {
-                            let instant = 1000.0 / delta as f32;
-                            smoothed_fps = if smoothed_fps == 0.0 {
-                                instant
-                            } else {
-                                0.85 * smoothed_fps + 0.15 * instant
-                            };
-                        }
+                    let now = std::time::Instant::now();
+                    let elapsed = now.duration_since(last_instant).as_secs_f32();
+                    last_instant = now;
+                    if elapsed > 0.0 {
+                        let instant = 1.0 / elapsed;
+                        smoothed_fps = if smoothed_fps == 0.0 {
+                            instant
+                        } else {
+                            0.9 * smoothed_fps + 0.1 * instant
+                        };
                     }
-                    last_timestamp = Some(frame.timestamp_ms);
 
                     match process_frame(frame_number, smoothed_fps, &detector, &frame, &tracker) {
                         Ok(packet) => {
@@ -530,7 +529,13 @@ fn annotate_frame(
             label_y + 8,
             Rgba([0, 0, 0, 180]),
         );
-        draw_label(&mut image, label_x, label_y, &label_text, Rgba([0, 255, 0, 255]));
+        draw_label(
+            &mut image,
+            label_x,
+            label_y,
+            &label_text,
+            Rgba([0, 255, 0, 255]),
+        );
     }
 
     let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps);
@@ -545,11 +550,17 @@ fn annotate_frame(
         info_y + 8,
         Rgba([0, 0, 0, 180]),
     );
-    draw_label(&mut image, info_x + 2, info_y, &info, Rgba([255, 255, 255, 255]));
+    draw_label(
+        &mut image,
+        info_x + 2,
+        info_y,
+        &info,
+        Rgba([255, 255, 255, 255]),
+    );
 
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
-    JpegEncoder::new_with_quality(&mut buffer, 85).encode_image(&rgb)?;
+    JpegEncoder::new_with_quality(&mut buffer, 70).encode_image(&rgb)?;
 
     Ok(FramePacket {
         jpeg: buffer,
@@ -713,9 +724,7 @@ fn glyph_bits(ch: char) -> Option<[u8; 7]> {
         '9' => Some([
             0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
         ]),
-        '.' => Some([
-            0, 0, 0, 0, 0, 0b00110, 0b00110,
-        ]),
+        '.' => Some([0, 0, 0, 0, 0, 0b00110, 0b00110]),
         ' ' => Some([0, 0, 0, 0, 0, 0, 0]),
         _ => None,
     }
