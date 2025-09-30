@@ -143,6 +143,13 @@ Class probabilities:
    cargo run -p cuda-app --features with-tch -- \
       vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
    ```
+  
+  or
+
+   ```bash
+   cargo run -p cuda-app --features with-tch -- \
+      vision-demo 0 models/yolov12n-face.torchscript 640 640 
+   ```
 
    Drop `--cpu` to use CUDA inference once you're ready. The current pipeline
    logs raw YOLO-style detections (`[x, y, w, h]` centers in the 640×640 input
