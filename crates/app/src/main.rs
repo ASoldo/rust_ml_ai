@@ -47,12 +47,13 @@ struct ServerState {
 }
 
 #[cfg(feature = "with-tch")]
-#[cfg(feature = "with-tch")]
 #[derive(Clone)]
 struct FramePacket {
     jpeg: Vec<u8>,
     detections: Vec<DetectionSummary>,
     timestamp_ms: i64,
+    frame_number: u64,
+    fps: f32,
 }
 
 #[cfg(feature = "with-tch")]
@@ -289,12 +290,29 @@ fn run_vision_demo(args: &[String]) {
     }
 
     println!("Running vision demo — press Ctrl+C to stop");
-    let mut frame_index: usize = 0;
+    let mut frame_number: u64 = 0;
+    let mut last_timestamp: Option<i64> = None;
+    let mut smoothed_fps: f32 = 0.0;
+
     while running.load(Ordering::Relaxed) {
         match receiver.recv() {
             Ok(frame) => match frame {
                 Ok(frame) => {
-                    match process_frame(frame_index, &detector, &frame, &tracker) {
+                    frame_number = frame_number.wrapping_add(1);
+                    if let Some(prev) = last_timestamp {
+                        let delta = frame.timestamp_ms - prev;
+                        if delta > 0 {
+                            let instant = 1000.0 / delta as f32;
+                            smoothed_fps = if smoothed_fps == 0.0 {
+                                instant
+                            } else {
+                                0.85 * smoothed_fps + 0.15 * instant
+                            };
+                        }
+                    }
+                    last_timestamp = Some(frame.timestamp_ms);
+
+                    match process_frame(frame_number, smoothed_fps, &detector, &frame, &tracker) {
                         Ok(packet) => {
                             if let Ok(mut guard) = shared.lock() {
                                 *guard = Some(packet);
@@ -302,7 +320,6 @@ fn run_vision_demo(args: &[String]) {
                         }
                         Err(err) => eprintln!("Frame processing error: {err}"),
                     }
-                    frame_index = frame_index.wrapping_add(1);
                 }
                 Err(err) => {
                     eprintln!("Capture error: {err}");
@@ -324,7 +341,8 @@ fn run_vision_demo(args: &[String]) {
 
 #[cfg(feature = "with-tch")]
 fn process_frame(
-    index: usize,
+    frame_number: u64,
+    fps: f32,
     detector: &Detector,
     frame: &Frame,
     tracker: &Arc<Mutex<SimpleTracker>>,
@@ -332,10 +350,10 @@ fn process_frame(
     let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
     let detections = detector.infer(&tensor)?;
     if detections.detections.is_empty() {
-        println!("frame #{index}: no detections");
+        println!("frame #{frame_number}: no detections");
     } else {
         println!(
-            "frame #{index}: {} detection(s)",
+            "frame #{frame_number}: {} detection(s)",
             detections.detections.len()
         );
         for (idx, det) in detections.detections.iter().enumerate() {
@@ -345,7 +363,7 @@ fn process_frame(
             );
         }
     }
-    annotate_frame(frame, &detections, tracker)
+    annotate_frame(frame, &detections, frame_number, fps, tracker)
 }
 
 #[cfg(feature = "with-tch")]
@@ -435,11 +453,15 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
         #[derive(serde::Serialize)]
         struct ResponsePayload<'a> {
             timestamp_ms: i64,
+            frame_number: u64,
+            fps: f32,
             detections: &'a [DetectionSummary],
         }
 
         HttpResponse::Ok().json(ResponsePayload {
             timestamp_ms: packet.timestamp_ms,
+            frame_number: packet.frame_number,
+            fps: packet.fps,
             detections: &packet.detections,
         })
     } else {
@@ -451,6 +473,8 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
 fn annotate_frame(
     frame: &Frame,
     detections: &DetectionBatch,
+    frame_number: u64,
+    fps: f32,
     tracker: &Arc<Mutex<SimpleTracker>>,
 ) -> AnyResult<FramePacket> {
     let width = frame.width as u32;
@@ -459,6 +483,7 @@ fn annotate_frame(
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
     let mut summaries = Vec::with_capacity(detections.detections.len());
+    let mut label_positions = Vec::with_capacity(detections.detections.len());
 
     for det in &detections.detections {
         let left = det.bbox[0].clamp(0.0, (width - 1) as f32);
@@ -480,16 +505,23 @@ fn annotate_frame(
             _ => "OBJECT",
         };
 
+        label_positions.push((left, top));
+
         summaries.push(DetectionSummary {
             class: label.to_string(),
             score: det.score,
             bbox: [left, top, right, bottom],
             track_id: 0,
         });
+    }
 
+    assign_tracks(tracker, &mut summaries);
+
+    for (summary, (left, top)) in summaries.iter().zip(label_positions.iter()) {
+        let label_text = format!("{} {}", summary.class, summary.track_id);
         let label_x = left.round() as i32;
         let label_y = (top.round() as i32 - 12).max(0);
-        let text_width = label.chars().count() as i32 * 6;
+        let text_width = label_text.chars().count() as i32 * 6;
         fill_rect(
             &mut image,
             label_x,
@@ -498,18 +530,33 @@ fn annotate_frame(
             label_y + 8,
             Rgba([0, 0, 0, 180]),
         );
-        draw_label(&mut image, label_x, label_y, label, Rgba([0, 255, 0, 255]));
+        draw_label(&mut image, label_x, label_y, &label_text, Rgba([0, 255, 0, 255]));
     }
+
+    let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps);
+    let info_width = (info.chars().count() as i32 * 6).min(width as i32);
+    let info_x = (width as i32 - info_width - 4).max(0);
+    let info_y = (height as i32 - 12).max(0);
+    fill_rect(
+        &mut image,
+        info_x,
+        info_y,
+        info_x + info_width + 4,
+        info_y + 8,
+        Rgba([0, 0, 0, 180]),
+    );
+    draw_label(&mut image, info_x + 2, info_y, &info, Rgba([255, 255, 255, 255]));
 
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
     JpegEncoder::new_with_quality(&mut buffer, 85).encode_image(&rgb)?;
-    assign_tracks(tracker, &mut summaries);
 
     Ok(FramePacket {
         jpeg: buffer,
         detections: summaries,
         timestamp_ms: frame.timestamp_ms,
+        frame_number,
+        fps,
     })
 }
 
@@ -618,6 +665,9 @@ fn glyph_bits(ch: char) -> Option<[u8; 7]> {
         'F' => Some([
             0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000,
         ]),
+        'M' => Some([
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ]),
         'O' => Some([
             0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
         ]),
@@ -632,6 +682,39 @@ fn glyph_bits(ch: char) -> Option<[u8; 7]> {
         ]),
         'N' => Some([
             0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001,
+        ]),
+        '0' => Some([
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ]),
+        '1' => Some([
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ]),
+        '2' => Some([
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ]),
+        '3' => Some([
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ]),
+        '4' => Some([
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ]),
+        '5' => Some([
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ]),
+        '6' => Some([
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ]),
+        '7' => Some([
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ]),
+        '8' => Some([
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ]),
+        '9' => Some([
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ]),
+        '.' => Some([
+            0, 0, 0, 0, 0, 0b00110, 0b00110,
         ]),
         ' ' => Some([0, 0, 0, 0, 0, 0, 0]),
         _ => None,

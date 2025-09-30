@@ -165,3 +165,6 @@ Class probabilities:
      real time (the HTML index page embeds this stream by default).
    - `http://127.0.0.1:8080/detections` – latest detections as JSON, including
      track identifiers (simple sequential tracker for now).
+
+   Each annotated frame includes the running frame counter and a smoothed FPS
+   estimate in the lower-right corner so you can monitor throughput at a glance.
