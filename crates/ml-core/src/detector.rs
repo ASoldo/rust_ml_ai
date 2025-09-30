@@ -60,19 +60,20 @@ impl Detector {
         }
 
         let (in_w, in_h) = self.input_size;
+
+        let mut tensor = Tensor::from_slice(rgba)
+            .to_kind(Kind::Float)
+            .view([height as i64, width as i64, 4])
+            .narrow(2, 0, 3)
+            .permute([2, 0, 1])
+            .unsqueeze(0)
+            / 255.0;
+
         if (width as i64, height as i64) != (in_w, in_h) {
-            anyhow::bail!(
-                "frame size {width}x{height} does not match detector input {in_w}x{in_h}"
-            );
+            tensor = tensor.upsample_bilinear2d(&[in_h, in_w], false, None, None);
         }
 
-        let tensor = Tensor::from_slice(rgba)
-            .to_device(self.device)
-            .to_kind(Kind::Float)
-            .view([1, in_h, in_w, 4])
-            .narrow(3, 0, 3)
-            .permute([0, 3, 1, 2])
-            / 255.0;
+        let tensor = tensor.to_device(self.device);
 
         Ok(tensor)
     }

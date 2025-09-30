@@ -63,6 +63,8 @@ fn capture_loop(
         });
     }
 
+    configure_camera(&mut cap, target_size, 60.0);
+
     // Best-effort: turn off autofocus/auto-exposure so the lens stops hunting.
     // let _ = cap.set(videoio::CAP_PROP_AUTOFOCUS, 0.0);
     // let _ = cap.set(videoio::CAP_PROP_FOCUS, 0.0);
@@ -132,4 +134,13 @@ fn capture_loop(
     }
 
     Ok(())
+}
+
+fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
+    if let Ok(fourcc) = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G') {
+        let _ = cap.set(videoio::CAP_PROP_FOURCC, fourcc as f64);
+    }
+    let _ = cap.set(videoio::CAP_PROP_FRAME_WIDTH, target_size.0 as f64);
+    let _ = cap.set(videoio::CAP_PROP_FRAME_HEIGHT, target_size.1 as f64);
+    let _ = cap.set(videoio::CAP_PROP_FPS, fps);
 }

@@ -141,7 +141,7 @@ Class probabilities:
 
    ```bash
    cargo run -p cuda-app --features with-tch -- \
-     vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
+      vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
    ```
 
    Drop `--cpu` to use CUDA inference once you're ready. The current pipeline
@@ -168,3 +168,4 @@ Class probabilities:
 
    Each annotated frame includes the running frame counter and a smoothed FPS
    estimate in the lower-right corner so you can monitor throughput at a glance.
+   Pass `--verbose` if you want the per-frame logs printed in the console.

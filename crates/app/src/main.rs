@@ -185,6 +185,8 @@ fn run_mnist_prediction(args: &[String]) {
     let model_path = PathBuf::from(&args[2]);
     let image_path = PathBuf::from(&args[3]);
     let use_cpu = args.iter().any(|arg| arg == "--cpu");
+    #[allow(unused_variables)]
+    let verbose = args.iter().any(|arg| arg == "--verbose");
     let device = if use_cpu {
         Device::Cpu
     } else {
@@ -248,6 +250,7 @@ fn run_vision_demo(args: &[String]) {
             return;
         }
     };
+    let verbose = args.iter().any(|arg| arg == "--verbose");
     let use_cpu = args.iter().any(|arg| arg == "--cpu");
     let device = if use_cpu {
         Device::Cpu
@@ -289,7 +292,11 @@ fn run_vision_demo(args: &[String]) {
         }
     }
 
-    println!("Running vision demo — press Ctrl+C to stop");
+    if verbose {
+        if verbose {
+            println!("Running vision demo — press Ctrl+C to stop");
+        }
+    }
     let mut frame_number: u64 = 0;
     let mut smoothed_fps: f32 = 0.0;
     let mut last_instant = std::time::Instant::now();
@@ -311,7 +318,14 @@ fn run_vision_demo(args: &[String]) {
                         };
                     }
 
-                    match process_frame(frame_number, smoothed_fps, &detector, &frame, &tracker) {
+                    match process_frame(
+                        frame_number,
+                        smoothed_fps,
+                        &detector,
+                        &frame,
+                        &tracker,
+                        verbose,
+                    ) {
                         Ok(packet) => {
                             if let Ok(mut guard) = shared.lock() {
                                 *guard = Some(packet);
@@ -335,7 +349,11 @@ fn run_vision_demo(args: &[String]) {
         }
     }
 
-    println!("Stopping vision demo");
+    if verbose {
+        if verbose {
+            println!("Stopping vision demo");
+        }
+    }
 }
 
 #[cfg(feature = "with-tch")]
@@ -345,21 +363,24 @@ fn process_frame(
     detector: &Detector,
     frame: &Frame,
     tracker: &Arc<Mutex<SimpleTracker>>,
+    verbose: bool,
 ) -> AnyResult<FramePacket> {
     let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
     let detections = detector.infer(&tensor)?;
-    if detections.detections.is_empty() {
-        println!("frame #{frame_number}: no detections");
-    } else {
-        println!(
-            "frame #{frame_number}: {} detection(s)",
-            detections.detections.len()
-        );
-        for (idx, det) in detections.detections.iter().enumerate() {
+    if verbose {
+        if detections.detections.is_empty() {
+            println!("frame #{frame_number}: no detections");
+        } else {
             println!(
-                "  #{idx}: class={} conf={:.3} bbox={:?}",
-                det.class_id, det.score, det.bbox
+                "frame #{frame_number}: {} detection(s)",
+                detections.detections.len()
             );
+            for (idx, det) in detections.detections.iter().enumerate() {
+                println!(
+                    "  #{idx}: class={} conf={:.3} bbox={:?}",
+                    det.class_id, det.score, det.bbox
+                );
+            }
         }
     }
     annotate_frame(frame, &detections, frame_number, fps, tracker)
@@ -728,6 +749,9 @@ fn glyph_bits(ch: char) -> Option<[u8; 7]> {
         ]),
         '9' => Some([
             0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ]),
+        '%' => Some([
+            0b10001, 0b10010, 0b00100, 0b01000, 0b10010, 0b10001, 0b00000,
         ]),
         '.' => Some([0, 0, 0, 0, 0, 0b00110, 0b00110]),
         ' ' => Some([0, 0, 0, 0, 0, 0, 0]),
