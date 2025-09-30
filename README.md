@@ -169,3 +169,39 @@ Class probabilities:
    Each annotated frame includes the running frame counter and a smoothed FPS
    estimate in the lower-right corner so you can monitor throughput at a glance.
    Pass `--verbose` if you want the per-frame logs printed in the console.
+
+## GPU pipeline details
+
+- Frames are captured as BGR8 via V4L and uploaded directly to CUDA without an
+  intermediate RGBA conversion. The resize, normalisation, tensor build, and
+  YOLO post-processing now live in CUDA kernels, so the annotated surface never
+  leaves the device until the very end of the pipeline.
+- Bounding boxes and labels are rasterised on the GPU against that BGR surface.
+- The final JPEG bitstream is produced with `nvJPEG` on the same CUDA stream, so
+  the CPU simply pushes the encoded bytes to the HTTP endpoints. The legacy CPU
+  path still exists and can be forced with `--cpu` for machines without CUDA.
+
+### nvJPEG runtime requirement
+
+`nvjpeg-sys` links against NVIDIA's `libnvjpeg`. Install the CUDA toolkit (or at
+least the nvJPEG runtime) and surface the CUDA/LibTorch binaries before running
+the demo. On Arch Linux the following environment works end-to-end:
+
+```bash
+export CUDA_HOME=/opt/cuda
+export LIBTORCH=/opt/libtorch
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
+export LIBRARY_PATH="$CUDA_HOME/lib64:${LIBRARY_PATH:-}"
+export LIBTORCH_BYPASS_VERSION_CHECK=1
+# Optional: Nsight tools in PATH if you profile
+export PATH=$PATH:/opt/nsight-systems/2025.3.2/target-linux-x64:/opt/nsight-compute/2025.3.1
+```
+
+### Remaining CPU hotspots
+
+The capture thread (V4L I/O), TorchScript host invocations, HTTP streaming, and
+JPEG transport still execute on the CPU. To offload those pieces entirely you
+will need GPU capture and streaming primitives (NVDEC/NVENC or a GPU-aware
+transport stack); the current code path is ready to integrate with them once the
+dependencies are available.
