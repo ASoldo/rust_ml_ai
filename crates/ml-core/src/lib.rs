@@ -21,10 +21,15 @@ pub use tch;
 mod digits;
 
 #[cfg(feature = "with-tch")]
+pub mod detector;
+
+#[cfg(feature = "with-tch")]
 pub use digits::{
     DIGIT_CLASS_COUNT, DigitClassifier, IMAGE_EDGE_PIXELS, Prediction, TrainingConfig,
     TrainingReport,
 };
 
+#[cfg(feature = "with-tch")]
+pub use detector::{Detection, DetectionBatch, Detector};
 #[cfg(feature = "with-tch")]
 pub use digits::{predict_image_file, train_mnist};

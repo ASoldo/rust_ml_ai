@@ -2,12 +2,49 @@ use gpu_kernels::add_vectors;
 use ml_core::sample_inputs;
 
 #[cfg(feature = "with-tch")]
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 #[cfg(feature = "with-tch")]
-use ml_core::{TrainingConfig, predict_image_file, tch::Device, train_mnist};
+use ml_core::{
+    DetectionBatch, TrainingConfig, detector::Detector, predict_image_file, tch::Device,
+    train_mnist,
+};
+
+#[cfg(feature = "with-tch")]
+use video_ingest::{self, Frame};
+
+#[cfg(feature = "with-tch")]
+use actix_web::{App, HttpResponse, HttpServer, web};
+
+#[cfg(feature = "with-tch")]
+use actix_web::web::Bytes;
+
+#[cfg(feature = "with-tch")]
+use anyhow::{Result as AnyResult, anyhow};
+
+#[cfg(feature = "with-tch")]
+use async_stream::stream;
+
+#[cfg(feature = "with-tch")]
+use ctrlc;
+
+#[cfg(feature = "with-tch")]
+use image::{DynamicImage, ImageBuffer, Rgba, codecs::jpeg::JpegEncoder};
 
 const ELEMENT_COUNT: usize = 16;
+
+#[cfg(feature = "with-tch")]
+type SharedFrame = Arc<Mutex<Option<Vec<u8>>>>;
+
+#[cfg(feature = "with-tch")]
+struct ServerState {
+    latest: SharedFrame,
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -44,6 +81,10 @@ fn handle_digits_commands(args: &[String]) -> bool {
         }
         Some("mnist-predict") => {
             run_mnist_prediction(args);
+            true
+        }
+        Some("vision-demo") => {
+            run_vision_demo(args);
             true
         }
         Some("mnist-help") => {
@@ -151,5 +192,386 @@ fn print_mnist_help() {
     println!(
         "  mnist-predict <model-path> <image-path> [--cpu]\n      Load a trained model and classify a 28x28 grayscale image."
     );
+    println!(
+        "  vision-demo <camera-uri> <model-path> <width> <height> [--cpu]\n      Stream frames from the camera and run the TorchScript detector (stubbed)."
+    );
     println!("  mnist-help\n      Show this message.");
+}
+
+#[cfg(feature = "with-tch")]
+fn run_vision_demo(args: &[String]) {
+    if args.len() < 6 {
+        eprintln!(
+            "Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu]"
+        );
+        return;
+    }
+
+    let camera_uri = args[2].clone();
+    let model_path = PathBuf::from(&args[3]);
+    let width = match args[4].parse::<i32>() {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("width must be an integer");
+            return;
+        }
+    };
+    let height = match args[5].parse::<i32>() {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("height must be an integer");
+            return;
+        }
+    };
+    let use_cpu = args.iter().any(|arg| arg == "--cpu");
+    let device = if use_cpu {
+        Device::Cpu
+    } else {
+        Device::cuda_if_available()
+    };
+
+    let detector = match Detector::new(&model_path, device, (width as i64, height as i64)) {
+        Ok(det) => det,
+        Err(err) => {
+            eprintln!("Failed to load detector: {err}");
+            return;
+        }
+    };
+
+    let receiver = match video_ingest::spawn_camera_reader(&camera_uri, (width, height)) {
+        Ok(rx) => rx,
+        Err(err) => {
+            eprintln!("Failed to start capture: {err}");
+            return;
+        }
+    };
+
+    let shared = Arc::new(Mutex::new(None));
+    if let Err(err) = spawn_preview_server(shared.clone()) {
+        eprintln!("Failed to start preview server: {err}");
+    } else {
+        println!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    {
+        let running = running.clone();
+        if let Err(err) = ctrlc::set_handler(move || {
+            running.store(false, Ordering::SeqCst);
+        }) {
+            eprintln!("Failed to install Ctrl+C handler: {err}");
+        }
+    }
+
+    println!("Running vision demo — press Ctrl+C to stop");
+    let mut frame_index: usize = 0;
+    while running.load(Ordering::Relaxed) {
+        match receiver.recv() {
+            Ok(frame) => match frame {
+                Ok(frame) => {
+                    match process_frame(frame_index, &detector, &frame) {
+                        Ok(encoded) => {
+                            if let Ok(mut guard) = shared.lock() {
+                                *guard = Some(encoded);
+                            }
+                        }
+                        Err(err) => eprintln!("Frame processing error: {err}"),
+                    }
+                    frame_index = frame_index.wrapping_add(1);
+                }
+                Err(err) => {
+                    eprintln!("Capture error: {err}");
+                    break;
+                }
+            },
+            Err(err) => {
+                eprintln!("Frame channel closed: {err}");
+                break;
+            }
+        }
+        if !running.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+
+    println!("Stopping vision demo");
+}
+
+#[cfg(feature = "with-tch")]
+fn process_frame(index: usize, detector: &Detector, frame: &Frame) -> AnyResult<Vec<u8>> {
+    let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
+    let detections = detector.infer(&tensor)?;
+    if detections.detections.is_empty() {
+        println!("frame #{index}: no detections");
+    } else {
+        println!(
+            "frame #{index}: {} detection(s)",
+            detections.detections.len()
+        );
+        for (idx, det) in detections.detections.iter().enumerate() {
+            println!(
+                "  #{idx}: class={} conf={:.3} xywh={:?}",
+                det.class_id, det.score, det.bbox_xywh
+            );
+        }
+    }
+    annotate_frame(frame, &detections)
+}
+
+#[cfg(feature = "with-tch")]
+fn spawn_preview_server(shared: SharedFrame) -> std::io::Result<()> {
+    let server_shared = shared.clone();
+    std::thread::spawn(move || {
+        if let Err(err) = actix_web::rt::System::new().block_on(async move {
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(ServerState {
+                        latest: server_shared.clone(),
+                    }))
+                    .route("/", web::get().to(index_route))
+                    .route("/frame.jpg", web::get().to(frame_handler))
+                    .route("/stream.mjpg", web::get().to(stream_handler))
+            })
+            .bind(("0.0.0.0", 8080))?
+            .run()
+            .await
+        }) {
+            eprintln!("HTTP server error: {err}");
+        }
+    });
+    Ok(())
+}
+
+#[cfg(feature = "with-tch")]
+async fn frame_handler(state: web::Data<ServerState>) -> HttpResponse {
+    let guard = match state.latest.lock() {
+        Ok(guard) => guard,
+        Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
+    };
+    if let Some(ref data) = *guard {
+        HttpResponse::Ok()
+            .content_type("image/jpeg")
+            .body(data.clone())
+    } else {
+        HttpResponse::NoContent().finish()
+    }
+}
+
+#[cfg(feature = "with-tch")]
+async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
+    let state = state.clone();
+    let stream = stream! {
+        let mut interval = actix_web::rt::time::interval(Duration::from_millis(33));
+        loop {
+            interval.tick().await;
+            let frame = state
+                .latest
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone());
+            if let Some(frame) = frame {
+                let mut payload = Vec::with_capacity(frame.len() + 64);
+                payload.extend_from_slice(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n");
+                payload.extend_from_slice(&frame);
+                payload.extend_from_slice(b"\r\n");
+                yield Ok::<Bytes, actix_web::Error>(Bytes::from(payload));
+            }
+        }
+    };
+
+    HttpResponse::Ok()
+        .append_header(("Cache-Control", "no-cache"))
+        .append_header(("Content-Type", "multipart/x-mixed-replace; boundary=frame"))
+        .streaming(stream)
+}
+
+#[cfg(feature = "with-tch")]
+async fn index_route() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(
+            "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" /></body></html>",
+        )
+}
+
+#[cfg(feature = "with-tch")]
+fn annotate_frame(frame: &Frame, detections: &DetectionBatch) -> AnyResult<Vec<u8>> {
+    let width = frame.width as u32;
+    let height = frame.height as u32;
+    let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, frame.data.clone())
+        .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
+
+    for det in &detections.detections {
+        let (cx, cy, w, h) = (
+            det.bbox_xywh[0],
+            det.bbox_xywh[1],
+            det.bbox_xywh[2],
+            det.bbox_xywh[3],
+        );
+        let (mut left, mut top, mut right, mut bottom) =
+            (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+
+        left = left.clamp(0.0, (width - 1) as f32);
+        right = right.clamp(0.0, (width - 1) as f32);
+        top = top.clamp(0.0, (height - 1) as f32);
+        bottom = bottom.clamp(0.0, (height - 1) as f32);
+
+        draw_rectangle(
+            &mut image,
+            left.round() as i32,
+            top.round() as i32,
+            right.round() as i32,
+            bottom.round() as i32,
+            Rgba([0, 255, 0, 255]),
+        );
+
+        let label = match det.class_id {
+            0 => "FACE",
+            1 => "PERSON",
+            _ => "OBJECT",
+        };
+
+        let label_x = left.round() as i32;
+        let label_y = (top.round() as i32 - 12).max(0);
+        let text_width = label.chars().count() as i32 * 6;
+        fill_rect(
+            &mut image,
+            label_x,
+            label_y,
+            label_x + text_width,
+            label_y + 8,
+            Rgba([0, 0, 0, 180]),
+        );
+        draw_label(&mut image, label_x, label_y, label, Rgba([0, 255, 0, 255]));
+    }
+
+    let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
+    let mut buffer = Vec::new();
+    JpegEncoder::new_with_quality(&mut buffer, 85).encode_image(&rgb)?;
+    Ok(buffer)
+}
+
+#[cfg(feature = "with-tch")]
+fn draw_rectangle(
+    image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    color: Rgba<u8>,
+) {
+    let width = image.width() as i32;
+    let height = image.height() as i32;
+    let left = left.clamp(0, width.saturating_sub(1));
+    let right = right.clamp(0, width.saturating_sub(1));
+    let top = top.clamp(0, height.saturating_sub(1));
+    let bottom = bottom.clamp(0, height.saturating_sub(1));
+
+    for x in left..=right {
+        if top >= 0 && top < height {
+            *image.get_pixel_mut(x as u32, top as u32) = color;
+        }
+        if bottom >= 0 && bottom < height {
+            *image.get_pixel_mut(x as u32, bottom as u32) = color;
+        }
+    }
+    for y in top..=bottom {
+        if left >= 0 && left < width {
+            *image.get_pixel_mut(left as u32, y as u32) = color;
+        }
+        if right >= 0 && right < width {
+            *image.get_pixel_mut(right as u32, y as u32) = color;
+        }
+    }
+}
+
+#[cfg(feature = "with-tch")]
+fn fill_rect(
+    image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    color: Rgba<u8>,
+) {
+    let width = image.width() as i32;
+    let height = image.height() as i32;
+    let left = left.clamp(0, width.saturating_sub(1));
+    let right = right.clamp(0, width.saturating_sub(1));
+    let top = top.clamp(0, height.saturating_sub(1));
+    let bottom = bottom.clamp(0, height.saturating_sub(1));
+
+    for y in top..=bottom {
+        for x in left..=right {
+            *image.get_pixel_mut(x as u32, y as u32) = color;
+        }
+    }
+}
+
+#[cfg(feature = "with-tch")]
+fn draw_label(
+    image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    mut x: i32,
+    y: i32,
+    text: &str,
+    color: Rgba<u8>,
+) {
+    let height = image.height() as i32;
+    let baseline = y;
+    for ch in text.chars().flat_map(|c| c.to_uppercase()) {
+        if let Some(glyph) = glyph_bits(ch) {
+            for (row, pattern) in glyph.iter().enumerate() {
+                let py = baseline + row as i32;
+                if py < 0 || py >= height {
+                    continue;
+                }
+                for col in 0..5 {
+                    if (pattern >> (4 - col)) & 1 == 1 {
+                        let px = x + col as i32;
+                        if px >= 0 && px < image.width() as i32 {
+                            *image.get_pixel_mut(px as u32, py as u32) = color;
+                        }
+                    }
+                }
+            }
+            x += 6;
+        } else {
+            x += 6;
+        }
+    }
+}
+
+#[cfg(feature = "with-tch")]
+fn glyph_bits(ch: char) -> Option<[u8; 7]> {
+    match ch {
+        'A' => Some([
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ]),
+        'C' => Some([
+            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+        ]),
+        'E' => Some([
+            0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b11111,
+        ]),
+        'F' => Some([
+            0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b10000,
+        ]),
+        'O' => Some([
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ]),
+        'P' => Some([
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ]),
+        'R' => Some([
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ]),
+        'S' => Some([
+            0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ]),
+        'N' => Some([
+            0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001,
+        ]),
+        ' ' => Some([0, 0, 0, 0, 0, 0, 0]),
+        _ => None,
+    }
 }

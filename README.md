@@ -100,3 +100,66 @@ Class probabilities:
   8: 0.000
   9: 0.000
 ```
+
+## Vision demo (TorchScript + video)
+
+> This command path mixes TorchScript inference with our Rust/CUDA pipeline so
+> we can experiment with real-time detection.
+
+1. Create a Python environment that bundles PyTorch and Ultralytics (so the
+   exporter gets a compatible libtorch):
+
+   ```bash
+   python3.11 -m venv ~/venvs/ultra
+   source ~/venvs/ultra/bin/activate
+   pip install --upgrade pip
+   pip install --extra-index-url https://download.pytorch.org/whl/cu124 \
+     torch torchvision
+   pip install ultralytics==8.3.0
+   ```
+
+2. Download a face-detection checkpoint and export it to TorchScript. The
+   YOLOv12 nano face model is a convenient starting point:
+
+   ```bash
+   mkdir -p models
+   wget https://github.com/akanametov/yolo-face/releases/download/v0.0.0/yolov12n-face.pt \
+     -O models/yolov12n-face.pt
+
+   yolo export \
+     model=models/yolov12n-face.pt \
+     format=torchscript \
+     imgsz=640 \
+     device=cuda   # or `cpu` if a GPU isn't available during export
+   ```
+
+   The exporter writes `models/yolov12n-face.torchscript`. Note the image size
+   (640×640 above); the Rust pipeline must feed frames at the same resolution.
+
+3. Run the new CLI subcommand. Supply a camera URI (`0` opens the default
+   webcam), the TorchScript path, and the width/height you exported with:
+
+   ```bash
+   cargo run -p cuda-app --features with-tch -- \
+     vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
+   ```
+
+   Drop `--cpu` to use CUDA inference once you're ready. The current pipeline
+   logs raw YOLO-style detections (`[x, y, w, h]` centers in the 640×640 input
+   space plus confidence):
+
+   ```text
+   frame #200: 11 detection(s)
+     #0: class=0 conf=0.83 xywh=[335.0, 323.1, 175.3, 306.4]
+     #1: class=0 conf=0.82 xywh=[334.6, 324.2, 173.9, 304.9]
+     ...
+   ```
+
+   Multiple boxes per face are expected right now—non‑max suppression and
+   additional post-processing will move into CUDA kernels in the upcoming steps.
+
+4. While the command is running, open the quick preview endpoints:
+
+   - `http://127.0.0.1:8080/frame.jpg` – last annotated frame as a JPEG snapshot.
+   - `http://127.0.0.1:8080/stream.mjpg` – MJPEG stream showing detections in
+     real time (the HTML index page embeds this stream by default).
