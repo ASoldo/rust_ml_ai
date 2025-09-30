@@ -517,7 +517,12 @@ fn annotate_frame(
     assign_tracks(tracker, &mut summaries);
 
     for (summary, (left, top)) in summaries.iter().zip(label_positions.iter()) {
-        let label_text = format!("{} {}", summary.class, summary.track_id);
+        let label_text = format!(
+            "{} {} {:.0}%",
+            summary.class,
+            summary.track_id,
+            summary.score * 100.0
+        );
         let label_x = left.round() as i32;
         let label_y = (top.round() as i32 - 12).max(0);
         let text_width = label_text.chars().count() as i32 * 6;
