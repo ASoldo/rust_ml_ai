@@ -17,7 +17,7 @@ pub struct VisionRuntime {
     preprocess_fn: CudaFunction,
     nms_fn: CudaFunction,
     annotate_fn: CudaFunction,
-    input_rgba: Option<CudaSlice<u8>>,
+    input_bgr: Option<CudaSlice<u8>>,
     resized_rgba: Option<CudaSlice<u8>>,
     tensor_buffer: Option<CudaSlice<f32>>,
     keep_flags: Option<CudaSlice<i32>>,
@@ -42,7 +42,7 @@ impl VisionRuntime {
     pub fn new(device_index: i32) -> Result<Self> {
         let context = CudaContext::new(device_index as usize)?;
         let module = context.load_module(Self::build_ptx()?)?;
-        let preprocess_fn = module.load_function("rgba_resize_normalize")?;
+        let preprocess_fn = module.load_function("bgr_resize_normalize")?;
         let nms_fn = module.load_function("nms_suppress")?;
         let annotate_fn = module.load_function("annotate_overlays")?;
         let stream = context.default_stream();
@@ -55,7 +55,7 @@ impl VisionRuntime {
             preprocess_fn,
             nms_fn,
             annotate_fn,
-            input_rgba: None,
+            input_bgr: None,
             resized_rgba: None,
             tensor_buffer: None,
             keep_flags: None,
@@ -75,14 +75,14 @@ impl VisionRuntime {
     }
 
     fn ensure_input_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
-        let needs = match self.input_rgba {
+        let needs = match self.input_bgr {
             Some(ref buf) if buf.len() >= len => false,
             _ => true,
         };
         if needs {
-            self.input_rgba = Some(self.stream.alloc_zeros::<u8>(len)?);
+            self.input_bgr = Some(self.stream.alloc_zeros::<u8>(len)?);
         }
-        Ok(self.input_rgba.as_mut().unwrap())
+        Ok(self.input_bgr.as_mut().unwrap())
     }
 
     fn ensure_resized_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
@@ -185,15 +185,15 @@ impl VisionRuntime {
     }
 
     /// Uploads RGBA pixels, resizes/normalises them, and stores the tensor-ready buffer on the GPU.
-    pub fn preprocess_rgba(
+    pub fn preprocess_bgr(
         &mut self,
-        rgba: &[u8],
+        bgr: &[u8],
         in_width: i32,
         in_height: i32,
         out_width: i32,
         out_height: i32,
     ) -> Result<PreprocessOutput> {
-        let num_pixels_in = rgba.len();
+        let num_pixels_in = bgr.len();
         let num_pixels_out = (out_width * out_height) as usize;
         let tensor_len = num_pixels_out * 3;
         let rgba_out_len = num_pixels_out * 4;
@@ -206,11 +206,11 @@ impl VisionRuntime {
         let preprocess_fn = self.preprocess_fn.clone();
 
         {
-            let input_slice = self.input_rgba.as_mut().unwrap();
-            stream.memcpy_htod(rgba, input_slice)?;
+            let input_slice = self.input_bgr.as_mut().unwrap();
+            stream.memcpy_htod(bgr, input_slice)?;
         }
 
-        let input_view = self.input_rgba.as_ref().unwrap().as_view();
+        let input_view = self.input_bgr.as_ref().unwrap().as_view();
         let mut tensor_view = {
             let tensor = self.tensor_buffer.as_mut().unwrap();
             tensor.as_view_mut()

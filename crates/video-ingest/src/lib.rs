@@ -5,7 +5,6 @@ use chrono::Utc;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use opencv::{
     core::{self, MatTraitConstManual},
-    imgproc,
     prelude::*,
     videoio::{self, VideoCapture, VideoCaptureTrait},
 };
@@ -17,6 +16,12 @@ pub struct Frame {
     pub width: i32,
     pub height: i32,
     pub timestamp_ms: i64,
+    pub format: FrameFormat,
+}
+
+#[derive(Clone, Copy)]
+pub enum FrameFormat {
+    Bgr8,
 }
 
 #[derive(Debug, Error)]
@@ -64,6 +69,7 @@ fn capture_loop(
     // let _ = cap.set(videoio::CAP_PROP_AUTO_EXPOSURE, 1.0);
 
     let mut frame = Mat::default();
+    let mut scratch = Mat::default();
     let (target_w, target_h) = target_size;
 
     loop {
@@ -79,33 +85,27 @@ fn capture_loop(
             continue;
         }
 
-        let mut working = Mat::default();
         let size = frame.size().map_err(|e| CaptureError::Other(e.into()))?;
 
-        if size.width != target_w || size.height != target_h {
-            imgproc::resize(
+        let working = if size.width != target_w || size.height != target_h {
+            opencv::imgproc::resize(
                 &frame,
-                &mut working,
+                &mut scratch,
                 core::Size {
                     width: target_w,
                     height: target_h,
                 },
                 0.0,
                 0.0,
-                imgproc::INTER_LINEAR,
+                opencv::imgproc::INTER_LINEAR,
             )
             .map_err(|e| CaptureError::Other(e.into()))?;
+            &scratch
         } else {
-            working = frame.clone();
-        }
+            &frame
+        };
 
-        let mut rgba = Mat::default();
-        let hint = core::get_default_algorithm_hint().map_err(|e| CaptureError::Other(e.into()))?;
-
-        imgproc::cvt_color(&working, &mut rgba, imgproc::COLOR_BGR2RGBA, 0, hint)
-            .map_err(|e| CaptureError::Other(e.into()))?;
-
-        let data = rgba
+        let data = working
             .data_bytes()
             .map_err(|e| CaptureError::Other(e.into()))?
             .to_vec();
@@ -118,6 +118,7 @@ fn capture_loop(
                 width: target_w,
                 height: target_h,
                 timestamp_ms,
+                format: FrameFormat::Bgr8,
             }))
             .is_err()
         {

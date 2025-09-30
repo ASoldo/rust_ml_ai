@@ -69,13 +69,13 @@ impl Detector {
         self.input_size
     }
 
-    /// Converts an RGBA frame (height, width) into a normalized tensor ready for inference.
-    pub fn rgba_to_tensor(&self, rgba: &[u8], width: i32, height: i32) -> Result<Tensor> {
-        let expected = (width as usize) * (height as usize) * 4;
-        if rgba.len() != expected {
+    /// Converts an interleaved BGR frame into a normalised tensor on the chosen device.
+    pub fn bgr_to_tensor(&self, bgr: &[u8], width: i32, height: i32) -> Result<Tensor> {
+        let expected = (width as usize) * (height as usize) * 3;
+        if bgr.len() != expected {
             anyhow::bail!(
                 "unexpected frame buffer size: got {} bytes, expected {}",
-                rgba.len(),
+                bgr.len(),
                 expected
             );
         }
@@ -91,7 +91,7 @@ impl Detector {
                 height: out_h,
                 ..
             } = guard
-                .preprocess_rgba(rgba, width, height, target_w, target_h)
+                .preprocess_bgr(bgr, width, height, target_w, target_h)
                 .map_err(|err| anyhow!("preprocess kernel failed: {err}"))?;
             let size = [1, 3, out_h as i64, out_w as i64];
             let tensor = unsafe {
@@ -106,10 +106,9 @@ impl Detector {
             Ok(tensor)
         } else {
             let (in_w, in_h) = self.input_size;
-            let mut tensor = Tensor::from_slice(rgba)
+            let mut tensor = Tensor::from_slice(bgr)
                 .to_kind(Kind::Float)
-                .view([height as i64, width as i64, 4])
-                .narrow(2, 0, 3)
+                .view([height as i64, width as i64, 3])
                 .permute([2, 0, 1])
                 .unsqueeze(0)
                 / 255.0;

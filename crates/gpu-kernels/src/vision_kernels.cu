@@ -1,4 +1,4 @@
-extern "C" __global__ void rgba_resize_normalize(
+extern "C" __global__ void bgr_resize_normalize(
     const unsigned char* input,
     int in_width,
     int in_height,
@@ -38,12 +38,12 @@ extern "C" __global__ void rgba_resize_normalize(
     int x1 = min(x0 + 1, in_width - 1);
     int y1 = min(y0 + 1, in_height - 1);
 
-    const int stride = in_width * 4;
+    const int stride = in_width * 3;
     const unsigned char* row0 = input + y0 * stride;
     const unsigned char* row1 = input + y1 * stride;
 
-    const int idx00 = x0 * 4;
-    const int idx10 = x1 * 4;
+    const int idx00 = x0 * 3;
+    const int idx10 = x1 * 3;
 
     const unsigned char* p00 = row0 + idx00;
     const unsigned char* p10 = row0 + idx10;
@@ -55,11 +55,11 @@ extern "C" __global__ void rgba_resize_normalize(
     const float w01 = (1.0f - tx) * ty;
     const float w11 = tx * ty;
 
-    float r = w00 * (float)p00[0] + w10 * (float)p10[0] + w01 * (float)p01[0] +
+    float b = w00 * (float)p00[0] + w10 * (float)p10[0] + w01 * (float)p01[0] +
               w11 * (float)p11[0];
     float g = w00 * (float)p00[1] + w10 * (float)p10[1] + w01 * (float)p01[1] +
               w11 * (float)p11[1];
-    float b = w00 * (float)p00[2] + w10 * (float)p10[2] + w01 * (float)p01[2] +
+    float r = w00 * (float)p00[2] + w10 * (float)p10[2] + w01 * (float)p01[2] +
               w11 * (float)p11[2];
 
     const float inv255 = 1.0f / 255.0f;

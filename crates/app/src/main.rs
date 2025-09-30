@@ -19,7 +19,7 @@ use ml_core::{
 use gpu_kernels::VisionRuntime;
 
 #[cfg(feature = "with-tch")]
-use video_ingest::{self, Frame};
+use video_ingest::{self, Frame, FrameFormat};
 
 #[cfg(feature = "with-tch")]
 use actix_web::{App, HttpResponse, HttpServer, web};
@@ -370,7 +370,10 @@ fn process_frame(
     verbose: bool,
     vision: Option<Arc<Mutex<VisionRuntime>>>,
 ) -> AnyResult<FramePacket> {
-    let tensor = detector.rgba_to_tensor(&frame.data, frame.width, frame.height)?;
+    if !matches!(frame.format, FrameFormat::Bgr8) {
+        return Err(anyhow!("unsupported frame format"));
+    }
+    let tensor = detector.bgr_to_tensor(&frame.data, frame.width, frame.height)?;
     let detections = detector.infer(&tensor)?;
     if verbose {
         if detections.detections.is_empty() {
@@ -570,7 +573,8 @@ fn annotate_frame_cpu(
 ) -> AnyResult<FramePacket> {
     let width = frame.width as u32;
     let height = frame.height as u32;
-    let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, frame.data.clone())
+    let rgba = bgr_to_rgba(&frame.data);
+    let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width, height, rgba)
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
     let mut label_positions = Vec::with_capacity(detections.detections.len());
@@ -726,6 +730,19 @@ fn annotate_frame_gpu(
         frame_number,
         fps,
     })
+}
+
+#[cfg(feature = "with-tch")]
+fn bgr_to_rgba(input: &[u8]) -> Vec<u8> {
+    let pixels = input.len() / 3;
+    let mut output = Vec::with_capacity(pixels * 4);
+    for chunk in input.chunks_exact(3) {
+        output.push(chunk[2]);
+        output.push(chunk[1]);
+        output.push(chunk[0]);
+        output.push(255);
+    }
+    output
 }
 
 #[cfg(feature = "with-tch")]
