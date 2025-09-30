@@ -248,7 +248,7 @@ fn open_video_capture(uri: &str) -> Result<VideoCapture, CaptureError> {
 }
 
 fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
-    if let Ok(fourcc) = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G') {
+    if let Ok(fourcc) = videoio::VideoWriter::fourcc('Y', 'U', 'Y', 'V') {
         let _ = cap.set(videoio::CAP_PROP_FOURCC, fourcc as f64);
     }
     let _ = cap.set(videoio::CAP_PROP_FRAME_WIDTH, target_size.0 as f64);
