@@ -218,6 +218,9 @@ For `--nvdec` you also need an FFmpeg build with CUDA/NVDEC enabled (Arch's
   formats. If the camera only advertises `MJPG`/`YUYV`, the `--nvdec` flag will
   fail—stick with the default MJPEG path in that case.
 
+- NVDEC/NVENC headers come from NVIDIA’s Video Codec SDK. Download the SDK (and
+  accept the license) from https://developer.nvidia.com/nvidia-video-codec-sdk/download.
+
 ### Remaining CPU hotspots
 
 The capture thread (V4L I/O), TorchScript host invocations, HTTP streaming, and
