@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Recon HUD — Map + MJPEG Frustum</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0f14; }
+    canvas { display: block; }
+    .attribution { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: #aab3c2; opacity: 0.85; }
+  </style>
+</head>
+
+<body x-data="hud()" class="overflow-hidden">
+  <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3">
+    <div class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700">
+      <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
+      <div class="mt-1 text-sm">
+        <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'" x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
+        <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'" x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
+        <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'" x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
+      </div>
+      <div class="mt-2 flex gap-2">
+        <button @click="toggleFrustum()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
+        <button @click="recenter()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Recenter</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="attribution">
+    Map data © <a class="underline" href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
+  </div>
+
+  <canvas id="scene"></canvas>
+  <canvas id="tileCanvas" width="768" height="768" style="display:none"></canvas>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+
+    // ---------------- Slippy map
+    const d2r = d => d * Math.PI / 180;
+    function latLonToTileXY(lat, lon, z) {
+      const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
+      const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1/Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z));
+      return { x, y };
+    }
+    async function buildTilePatch({ lat, lon }, zoom=16) {
+      const { x: cx, y: cy } = latLonToTileXY(lat, lon, zoom);
+      const tileSize = 256, grid = 3;
+      const canvas = document.getElementById('tileCanvas');
+      canvas.width = tileSize * grid; canvas.height = tileSize * grid;
+      const ctx = canvas.getContext('2d');
+      let ok = 0;
+      const loads = [];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const url = `https://tile.openstreetmap.org/${zoom}/${cx+dx}/${cy+dy}.png`;
+        loads.push(new Promise(res => {
+          const img = new Image(); img.crossOrigin = 'anonymous';
+          img.onload = () => { ctx.drawImage(img, (dx+1)*tileSize, (dy+1)*tileSize); ok++; res(); };
+          img.onerror = () => res();
+          img.src = url;
+        }));
+      }
+      await Promise.all(loads);
+      if (!ok) throw new Error("No tiles loaded");
+      return canvas;
+    }
+
+    // ---------------- MJPEG -> CanvasTexture (recreate on size change)
+    class MJPEGTexture {
+      constructor(url) {
+        this.url = url;
+        this.canvas = document.createElement('canvas');
+        this.ctx = this.canvas.getContext('2d');
+
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this._setupTex(this.texture);
+
+        this.ok = false; this.fps = 0;
+        this._frames = 0; this._last = performance.now();
+        this._w = 0; this._h = 0;
+        this._consumers = new Set();
+      }
+      _setupTex(tex) {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.flipY = true;
+        tex.needsUpdate = true;
+      }
+      attach(material) {
+        material.map = this.texture;
+        material.needsUpdate = true;
+        this._consumers.add(material);
+      }
+      _recreateTextureForSize(w, h) {
+        const newCanvas = document.createElement('canvas');
+        newCanvas.width = w; newCanvas.height = h;
+        this.canvas = newCanvas; this.ctx = newCanvas.getContext('2d');
+        const oldTex = this.texture;
+        this.texture = new THREE.CanvasTexture(this.canvas);
+        this._setupTex(this.texture);
+        if (oldTex) oldTex.dispose();
+        for (const mat of this._consumers) { mat.map = this.texture; mat.needsUpdate = true; }
+      }
+      async start(onStatus) {
+        try {
+          const resp = await fetch(this.url, { mode: 'cors' });
+          if (!resp.body) throw new Error('no body');
+          const reader = resp.body.getReader();
+          let buf = new Uint8Array(0);
+          const SOI = [0xFF,0xD8], EOI = [0xFF,0xD9];
+          const find = (b,m)=>{ for (let i=0;i<b.length-1;i++) if (b[i]===m[0]&&b[i+1]===m[1]) return i; return -1; };
+
+          this.ok = true; onStatus?.(this);
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+
+            const tmp = new Uint8Array(buf.length + value.length);
+            tmp.set(buf); tmp.set(value, buf.length); buf = tmp;
+
+            while (true) {
+              const s = find(buf, SOI), e = find(buf, EOI);
+              if (s >= 0 && e > s) {
+                const frame = buf.slice(s, e+2);
+                buf = buf.slice(e+2);
+                try {
+                  const bmp = await createImageBitmap(new Blob([frame], { type: 'image/jpeg' }), { imageOrientation: 'from-image' });
+                  const w = bmp.width|0, h = bmp.height|0;
+                  if (!w || !h) continue;
+                  if (w !== this._w || h !== this._h) { this._w = w; this._h = h; this._recreateTextureForSize(w, h); }
+                  this.ctx.drawImage(bmp, 0, 0, this._w, this._h);
+                  this.texture.needsUpdate = true;
+
+                  this._frames++;
+                  const now = performance.now();
+                  if (now - this._last > 1000) {
+                    this.fps = (this._frames * 1000) / (now - this._last);
+                    this._frames = 0; this._last = now; onStatus?.(this);
+                  }
+                } catch {}
+              } else break;
+            }
+          }
+        } catch { this.ok = false; this.fps = 0; onStatus?.(this); }
+      }
+    }
+
+    // ---------------- Three bootstrap
+    function bootScene(hooks) {
+      const canvas = document.getElementById('scene');
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0b0f14);
+
+      const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 2000);
+      camera.position.set(0, 160, 260);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0, 0, 0);
+      controls.enableDamping = true;
+
+      scene.add(new THREE.HemisphereLight(0xbcd1ff, 0x232b35, 0.6));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+      dir.position.set(80,120,60); scene.add(dir);
+      scene.add(new THREE.AxesHelper(10));
+
+      function resize(){
+        const w = innerWidth, h = innerHeight;
+        camera.aspect = w/h; camera.updateProjectionMatrix();
+        renderer.setSize(w,h,false);
+      }
+      addEventListener('resize', resize); resize();
+
+      const clock = new THREE.Clock();
+      (function tick(){
+        hooks?.update?.(clock.getDelta());
+        controls.update();
+        renderer.render(scene, camera);
+        requestAnimationFrame(tick);
+      })();
+
+      return { scene, camera, renderer, controls };
+    }
+
+    // ---------------- Virtual camera rig (scaled to map size)
+    function buildVirtualCameraRig(scene, mjpeg) {
+      const RIG_SCALE = 60;  // adjust to taste for your 1000-unit ground
+
+      const group = new THREE.Group();
+
+      const vcam = new THREE.PerspectiveCamera(50, 4/3, 1, 50);
+      vcam.position.set(-0.5, 0.6, 0.5);  // small local units, group scale handles world size
+      vcam.lookAt(0, 0, 0);
+
+      const helper = new THREE.CameraHelper(vcam);
+
+      const near = 2, eps = 0.01;
+      const halfH = Math.tan(THREE.MathUtils.degToRad(vcam.fov * 0.5)) * near;
+      const halfW = halfH * (4/3);
+
+      const screenGeom = new THREE.PlaneGeometry(halfW*2, halfH*2);
+      const screenMat = new THREE.MeshBasicMaterial({
+        map: null, side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false
+      });
+      mjpeg.attach(screenMat);
+
+      const screen = new THREE.Mesh(screenGeom, screenMat);
+      screen.position.set(0, 0, -(near + eps));
+      screen.renderOrder = 10;
+      vcam.add(screen);
+
+      const rig = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0,0,0),
+          new THREE.Vector3(0,-0.2,0),
+          new THREE.Vector3(-0.12,-0.28,0)
+        ]),
+        new THREE.LineBasicMaterial({ color: 0x89b4fa, depthTest: false, depthWrite: false })
+      );
+      vcam.add(rig);
+
+      group.add(vcam, helper);
+      group.position.set(0, 0, 0);
+      group.scale.setScalar(RIG_SCALE);
+
+      scene.add(group);
+      return { group, vcam, helper, screen, screenMat };
+    }
+
+    // ---------------- Alpine app
+    window.hud = () => ({
+      geo: { ok: false, lat: 45.813, lon: 15.977 },
+      map: { ready: false, mesh: null, zoom: 16 },
+      stream: { ok: false, fps: 0 },
+      three: null,
+      frustumVisible: true,
+      rig: null,
+      mjpeg: null,
+
+      async init() {
+        this.three = bootScene({ update: () => {} });
+        this.three.camera.lookAt(0, 0, 0);
+
+        await this.acquireLocation();
+        await this.loadMapPlane();
+
+        this.mjpeg = new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg'); // or '/mjpg' if proxied
+        this.mjpeg.start(s => { this.stream.ok = s.ok; this.stream.fps = s.fps; });
+
+        this.rig = buildVirtualCameraRig(this.three.scene, this.mjpeg);
+        this.rig.helper.visible = this.frustumVisible;
+
+        // Tiny HUD preview to confirm texture is live
+        const hudGeom = new THREE.PlaneGeometry(24, 18);
+        const hudMat = new THREE.MeshBasicMaterial({ map: null, depthTest: false, depthWrite: false, toneMapped: false });
+        this.mjpeg.attach(hudMat);
+        const hud = new THREE.Mesh(hudGeom, hudMat);
+        hud.position.set(-40, 25, -90);
+        this.three.camera.add(hud);
+      },
+
+      async acquireLocation() {
+        const params = new URLSearchParams(location.search);
+        if (params.get('lat') && params.get('lon')) {
+          this.geo.ok = true; this.geo.lat = parseFloat(params.get('lat')); this.geo.lon = parseFloat(params.get('lon')); return;
+        }
+        const p = new Promise(resolve => {
+          if (!('geolocation' in navigator)) return resolve(false);
+          navigator.geolocation.getCurrentPosition(
+            pos => { this.geo.ok = true; this.geo.lat = pos.coords.latitude; this.geo.lon = pos.coords.longitude; resolve(true); },
+            () => resolve(false),
+            { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 }
+          );
+        });
+        await p;
+      },
+
+      async loadMapPlane() {
+        try {
+          const patch = await buildTilePatch({ lat: this.geo.lat, lon: this.geo.lon }, this.map.zoom);
+          const tex = new THREE.CanvasTexture(patch);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+          tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+
+          const planeSize = 1000, aspect = patch.height / patch.width;
+          const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(planeSize, planeSize * aspect),
+            new THREE.MeshStandardMaterial({ map: tex })
+          );
+          ground.rotation.x = -Math.PI / 2;
+
+          if (this.map.mesh) {
+            this.three.scene.remove(this.map.mesh);
+            this.map.mesh.geometry.dispose();
+            this.map.mesh.material.map.dispose();
+            this.map.mesh.material.dispose();
+          }
+          this.three.scene.add(ground);
+          this.map.mesh = ground;
+          this.map.ready = true;
+        } catch { this.map.ready = false; }
+      },
+
+      toggleFrustum() {
+        this.frustumVisible = !this.frustumVisible;
+        if (this.rig?.helper) this.rig.helper.visible = this.frustumVisible;
+      },
+
+      async recenter() {
+        await this.acquireLocation();
+        await this.loadMapPlane();
+      }
+    });
+  </script>
+
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</body>
+</html>

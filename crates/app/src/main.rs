@@ -1,3 +1,4 @@
+use actix_web::http::header;
 use gpu_kernels::add_vectors;
 use ml_core::sample_inputs;
 
@@ -538,6 +539,10 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
     };
 
     HttpResponse::Ok()
+        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
+        .insert_header((header::ACCESS_CONTROL_ALLOW_HEADERS, "*"))
+        .insert_header((header::ACCESS_CONTROL_ALLOW_METHODS, "GET"))
+        .insert_header((header::ACCESS_CONTROL_EXPOSE_HEADERS, "Content-Type"))
         .append_header(("Cache-Control", "no-cache"))
         .append_header(("Content-Type", "multipart/x-mixed-replace; boundary=frame"))
         .streaming(stream)
@@ -545,7 +550,7 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
 
 #[cfg(feature = "with-tch")]
 async fn index_route() -> HttpResponse {
-    HttpResponse::Ok()
+    HttpResponse::Ok() 
         .content_type("text/html; charset=utf-8")
         .body(
             "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" height=\"480\" /></body></html>",
