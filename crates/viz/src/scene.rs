@@ -36,9 +36,9 @@ pub fn spawn_environment(
         MeshMaterial3d(stream_material.clone()),
         Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_euler(
             EulerRot::YXZ,
-            std::f32::consts::FRAC_PI_2,
             0.0,
             0.0,
+            std::f32::consts::PI,
         )),
         GlobalTransform::default(),
         Visibility::default(),
