@@ -2,7 +2,9 @@
 members = [
     "crates/app",
     "crates/gpu-kernels",
-    "crates/ml-core", "crates/video-ingest",
+    "crates/ml-core",
+    "crates/video-ingest",
+    "crates/viz",
 ]
 resolver = "2"
 
