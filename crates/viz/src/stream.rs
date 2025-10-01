@@ -51,7 +51,14 @@ pub struct StreamMaterial {
 
 #[derive(Resource)]
 struct FrameReceiver {
-    rx: Mutex<Receiver<Vec<u8>>>,
+    rx: Mutex<Receiver<DecodedFrame>>,
+}
+
+struct DecodedFrame {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    frame_len: usize,
 }
 
 impl Plugin for StreamTexturePlugin {
@@ -81,18 +88,26 @@ fn setup_stream_texture(
     );
 
     let image_handle = images.add(placeholder);
-    let (tx, rx) = mpsc::channel();
+    let (raw_tx, raw_rx) = mpsc::channel();
+    let (decoded_tx, decoded_rx) = mpsc::channel();
 
     commands.insert_resource(StreamTexture {
         handle: image_handle.clone(),
     });
-    commands.insert_resource(FrameReceiver { rx: Mutex::new(rx) });
+    commands.insert_resource(FrameReceiver {
+        rx: Mutex::new(decoded_rx),
+    });
 
-    let config = config.clone();
+    let reader_config = config.clone();
     thread::Builder::new()
         .name("mjpeg-stream-reader".into())
-        .spawn(move || run_stream_reader(config, tx))
+        .spawn(move || run_stream_reader(reader_config, raw_tx))
         .expect("failed to spawn mjpeg stream reader thread");
+
+    thread::Builder::new()
+        .name("mjpeg-frame-decoder".into())
+        .spawn(move || run_frame_decoder(raw_rx, decoded_tx))
+        .expect("failed to spawn mjpeg frame decoder thread");
 }
 
 pub fn debug_texture_sample(
@@ -125,7 +140,7 @@ fn update_stream_texture(
         return;
     };
 
-    let mut latest_frame: Option<Vec<u8>> = None;
+    let mut latest_frame: Option<DecodedFrame> = None;
 
     let guard = match receiver.rx.lock() {
         Ok(guard) => guard,
@@ -152,44 +167,64 @@ fn update_stream_texture(
         return;
     };
 
-    let frame_len = frame.len();
-    match image::load_from_memory(&frame) {
-        Ok(dynamic) => {
-            let rgba = dynamic.into_rgba8();
-            let (width, height) = rgba.dimensions();
-            let data = rgba.into_raw();
+    apply_frame_to_image(
+        &mut images,
+        &stream_texture.handle,
+        frame.width,
+        frame.height,
+        frame.rgba,
+        frame.frame_len,
+    );
 
-            apply_frame_to_image(
-                &mut images,
-                &stream_texture.handle,
-                width,
-                height,
-                data,
-                frame_len,
-            );
-
-            if let (Some(stream_material), Some(materials)) = (stream_material, materials.as_mut())
-            {
-                if let Some(material) = materials.get_mut(&stream_material.handle) {
-                    material.base_color_texture = Some(stream_texture.handle.clone());
-                }
-            }
-
-            if !FIRST_FRAME_DUMPED.swap(true, Ordering::Relaxed) {
-                match std::fs::write("viz_first_frame.jpg", &frame) {
-                    Ok(_) => info!(
-                        "Dumped first MJPEG frame ({} bytes) to viz_first_frame.jpg",
-                        frame_len
-                    ),
-                    Err(err) => warn!("Failed to dump first MJPEG frame: {err}"),
-                }
-            }
+    if let (Some(stream_material), Some(materials)) = (stream_material, materials.as_mut()) {
+        if let Some(material) = materials.get_mut(&stream_material.handle) {
+            material.base_color_texture = Some(stream_texture.handle.clone());
         }
-        Err(err) => warn!(
-            "Failed to decode MJPEG frame ({} bytes): {err}",
-            frame_len,
-            err = err
-        ),
+    }
+}
+
+fn run_frame_decoder(rx: Receiver<Vec<u8>>, tx: Sender<DecodedFrame>) {
+    while let Ok(mut frame) = rx.recv() {
+        while let Ok(newer) = rx.try_recv() {
+            frame = newer;
+        }
+
+        let frame_len = frame.len();
+        match image::load_from_memory(&frame) {
+            Ok(dynamic) => {
+                if !FIRST_FRAME_DUMPED.swap(true, Ordering::Relaxed) {
+                    if let Err(err) = std::fs::write("viz_first_frame.jpg", &frame) {
+                        warn!("Failed to dump first MJPEG frame: {err}");
+                    } else {
+                        info!(
+                            "Dumped first MJPEG frame ({} bytes) to viz_first_frame.jpg",
+                            frame_len
+                        );
+                    }
+                }
+
+                let rgba = dynamic.into_rgba8();
+                let (width, height) = rgba.dimensions();
+                let data = rgba.into_raw();
+
+                if tx
+                    .send(DecodedFrame {
+                        rgba: data,
+                        width,
+                        height,
+                        frame_len,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(err) => warn!(
+                "Failed to decode MJPEG frame ({} bytes): {err}",
+                frame_len,
+                err = err
+            ),
+        }
     }
 }
 
