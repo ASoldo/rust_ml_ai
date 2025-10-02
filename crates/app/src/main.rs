@@ -40,6 +40,9 @@ use ctrlc;
 #[cfg(feature = "with-tch")]
 use image::{DynamicImage, ImageBuffer, Rgba, codecs::jpeg::JpegEncoder};
 
+#[cfg(feature = "with-tch")]
+use serde_json::to_string;
+
 const ELEMENT_COUNT: usize = 16;
 
 #[cfg(feature = "with-tch")]
@@ -67,6 +70,15 @@ struct DetectionSummary {
     score: f32,
     bbox: [f32; 4],
     track_id: i64,
+}
+
+#[cfg(feature = "with-tch")]
+#[derive(serde::Serialize)]
+struct DetectionsResponse<'a> {
+    timestamp_ms: i64,
+    frame_number: u64,
+    fps: f32,
+    detections: &'a [DetectionSummary],
 }
 
 #[cfg(feature = "with-tch")]
@@ -490,6 +502,10 @@ fn spawn_preview_server(shared: SharedFrame) -> std::io::Result<()> {
                     .route("/frame.jpg", web::get().to(frame_handler))
                     .route("/stream.mjpg", web::get().to(stream_handler))
                     .route("/detections", web::get().to(detections_handler))
+                    .route(
+                        "/stream_detections",
+                        web::get().to(stream_detections_handler),
+                    )
             })
             .bind(("0.0.0.0", 8080))?
             .run()
@@ -550,7 +566,7 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
 
 #[cfg(feature = "with-tch")]
 async fn index_route() -> HttpResponse {
-    HttpResponse::Ok() 
+    HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(
             "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" height=\"480\" /></body></html>",
@@ -564,15 +580,7 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
         Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
     };
     if let Some(ref packet) = *guard {
-        #[derive(serde::Serialize)]
-        struct ResponsePayload<'a> {
-            timestamp_ms: i64,
-            frame_number: u64,
-            fps: f32,
-            detections: &'a [DetectionSummary],
-        }
-
-        HttpResponse::Ok().json(ResponsePayload {
+        HttpResponse::Ok().json(DetectionsResponse {
             timestamp_ms: packet.timestamp_ms,
             frame_number: packet.frame_number,
             fps: packet.fps,
@@ -581,6 +589,55 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     } else {
         HttpResponse::NoContent().finish()
     }
+}
+
+#[cfg(feature = "with-tch")]
+async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpResponse {
+    let state = state.clone();
+    let stream = stream! {
+        let mut interval = actix_web::rt::time::interval(Duration::from_millis(250));
+        loop {
+            interval.tick().await;
+            let snapshot = state
+                .latest
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone());
+            if let Some(packet) = snapshot {
+                let payload = DetectionsResponse {
+                    timestamp_ms: packet.timestamp_ms,
+                    frame_number: packet.frame_number,
+                    fps: packet.fps,
+                    detections: &packet.detections,
+                };
+                match to_string(&payload) {
+                    Ok(json) => {
+                        let mut sse_chunk = String::with_capacity(json.len() + 7);
+                        sse_chunk.push_str("data: ");
+                        sse_chunk.push_str(&json);
+                        sse_chunk.push_str("\n\n");
+                        yield Ok::<Bytes, actix_web::Error>(Bytes::from(sse_chunk));
+                    }
+                    Err(err) => {
+                        let error_chunk = format!("event: error\ndata: {}\n\n", err);
+                        yield Ok::<Bytes, actix_web::Error>(Bytes::from(error_chunk));
+                    }
+                }
+            } else {
+                yield Ok::<Bytes, actix_web::Error>(Bytes::from_static(b": keep-alive\n\n"));
+            }
+        }
+    };
+
+    HttpResponse::Ok()
+        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
+        .insert_header((header::ACCESS_CONTROL_ALLOW_HEADERS, "*"))
+        .insert_header((header::ACCESS_CONTROL_ALLOW_METHODS, "GET"))
+        .insert_header((header::ACCESS_CONTROL_EXPOSE_HEADERS, "Content-Type"))
+        .append_header(("Cache-Control", "no-cache"))
+        .append_header(("Content-Type", "text/event-stream"))
+        .append_header(("Connection", "keep-alive"))
+        .streaming(stream)
 }
 
 #[cfg(feature = "with-tch")]

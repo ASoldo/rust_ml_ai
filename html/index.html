@@ -49,6 +49,7 @@
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
     // ----- 3D Azimuth dial anchored at virtual camera ground point -----
     function makeCircle(radius, segments=256, color=0x475569, width=2){
       const pts = [];
@@ -135,6 +136,99 @@
       scene.add(g);
       return g;
     }
+
+    // Map a UV coordinate on the live-feed plane to a world position on that plane
+    function uvToWorldOnScreen(screen, feedW, feedH, u, v){
+      // PlaneGeometry is centered with X=width, Y=height, Z forward
+      const local = new THREE.Vector3(
+        (u - 0.5) * feedW,
+        (0.5 - v) * feedH,
+        0
+      );
+      return local.applyMatrix4(screen.matrixWorld);
+    }
+
+  // Normalize a bbox to center (u,v) in [0..1].
+  // Supports array/object; xyxy or xywh; pixels or normalized.
+  function bboxToCenterUV(bb, imgW, imgH){
+    // Helper: clamp 0..1
+    const clamp01 = (t)=> Math.min(1, Math.max(0, t));
+
+    // Object forms
+    if (bb && typeof bb === 'object' && !Array.isArray(bb)) {
+      // Explicit xyxy keys
+      if (('x1' in bb && 'y1' in bb && 'x2' in bb && 'y2' in bb) ||
+          ('left' in bb && 'top' in bb && 'right' in bb && 'bottom' in bb)) {
+        const x1 = bb.x1 ?? bb.left, y1 = bb.y1 ?? bb.top;
+        const x2 = bb.x2 ?? bb.right, y2 = bb.y2 ?? bb.bottom;
+        const norm = x1<=1 && y1<=1 && x2<=1 && y2<=1;
+        const cx = norm ? (x1+x2)*0.5 : (x1+x2)*0.5 / imgW;
+        const cy = norm ? (y1+y2)*0.5 : (y1+y2)*0.5 / imgH;
+        return [clamp01(cx), clamp01(cy)];
+      }
+      // Explicit xywh keys
+      if (('x' in bb && 'y' in bb && ('w' in bb || 'width' in bb) && ('h' in bb || 'height' in bb))) {
+        const x = bb.x ?? bb.left ?? 0;
+        const y = bb.y ?? bb.top  ?? 0;
+        const w = bb.w ?? bb.width ?? 0;
+        const h = bb.h ?? bb.height?? 0;
+        const norm = x<=1 && y<=1 && w<=1 && h<=1;
+        const cx = norm ? (x + w*0.5) : (x + w*0.5) / imgW;
+        const cy = norm ? (y + h*0.5) : (y + h*0.5) / imgH;
+        return [clamp01(cx), clamp01(cy)];
+      }
+    }
+
+    // Array form
+    if (Array.isArray(bb) && bb.length === 4){
+      const [a,b,c,d] = bb;
+
+      // First: try xyxy in pixels (most robust test)
+      const looksXYXYpx = (a < c) && (b < d) && (c <= imgW+1) && (d <= imgH+1);
+      if (looksXYXYpx) {
+        const cx = (a + c) * 0.5 / imgW;
+        const cy = (b + d) * 0.5 / imgH;
+        return [clamp01(cx), clamp01(cy)];
+      }
+
+      // Next: try normalized xyxy (all <=1 and a<c, b<d)
+      const looksXYXYnorm = (a<=1 && b<=1 && c<=1 && d<=1) && (a < c) && (b < d);
+      if (looksXYXYnorm) {
+        const cx = (a + c) * 0.5;
+        const cy = (b + d) * 0.5;
+        return [clamp01(cx), clamp01(cy)];
+      }
+
+      // Fallback: xywh (pixels or normalized)
+      const norm = a<=1 && b<=1 && c<=1 && d<=1;
+      const cx = norm ? (a + c*0.5) : (a + c*0.5) / imgW;
+      const cy = norm ? (b + d*0.5) : (b + d*0.5) / imgH;
+      return [clamp01(cx), clamp01(cy)];
+    }
+
+    // Last resort: center of frame
+    return [0.5, 0.5];
+  }
+
+      // --- Aspect compensation ---
+      // Adjust (u,v) from source image aspect to how the texture is displayed on a plane of (feedW x feedH).
+      // If the plane is wider than the source, we pillarbox (shrink X range towards center);
+      // if the plane is taller, we letterbox (shrink Y range towards center).
+      function compensateAspect(u, v, srcW, srcH, feedW, feedH){
+        const srcA = srcW / srcH;
+        const planeA = feedW / feedH;
+        let uu = u, vv = v;
+        if (planeA > srcA){
+          // plane wider -> pillarbox horizontally
+          const scaleX = srcA / planeA; // < 1
+          uu = 0.5 + (u - 0.5) * scaleX;
+        } else if (planeA < srcA){
+          // plane taller -> letterbox vertically
+          const scaleY = planeA / srcA; // < 1
+          vv = 0.5 + (v - 0.5) * scaleY;
+        }
+        return [Math.min(1,Math.max(0,uu)), Math.min(1,Math.max(0,vv))];
+      }
 
     // ---------- Slippy map ----------
     const d2r = d => d * Math.PI / 180;
@@ -341,6 +435,10 @@
       map:{ready:false,mesh:null,zoom:16},
       stream:{ok:false,fps:0},
       three:null, rig:null, mjpeg:null, frustumVisible:true,
+      screen:null, // live-feed mesh
+      feed:{w:80, h:60},
+      detLines:null, // group containing current detection lines
+      sse:null,      // EventSource
 
       async init(){
         this.three=bootScene({update:()=>{}});
@@ -353,8 +451,9 @@
         this.mjpeg=new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
         this.mjpeg.start(s=>{ this.stream.ok=s.ok; this.stream.fps=s.fps; });
 
-        // Live-feed plane
-        const feedW=80, feedH=60;
+        // Live-feed plane (4:3 for visual)
+        const feedW=80, feedH=60; // keep for world-space mapping
+        this.feed = { w: feedW, h: feedH };
         const lift = feedH * 0.5;
         const screenGeom=new THREE.PlaneGeometry(feedW,feedH);
         const screenMat=new THREE.MeshBasicMaterial({ side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false });
@@ -364,6 +463,7 @@
         screen.position.set(0, 5 + lift, 0);
         screen.rotation.set(-0.15, 0.45, 0.0);
         this.three.scene.add(screen);
+        this.screen = screen;
 
         // Frustum gizmo fitted to the raised screen
         this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:60, color:0xf6c560 });
@@ -372,6 +472,57 @@
         // Azimuth dial anchored at virtual camera ground point, a few units up
         const groundPoint = new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z);
         this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: groundPoint, radius: 90, y: 2 });
+
+        // Detection lines container
+        this.detLines = new THREE.Group();
+        this.three.scene.add(this.detLines);
+
+        // SSE: /stream_detections
+        try {
+          this.sse = new EventSource('http://127.0.0.1:8080/stream_detections');
+          this.sse.onmessage = (ev) => {
+            if (!ev.data) return;
+            try { this.handleDetections(JSON.parse(ev.data)); } catch {}
+          };
+          this.sse.onerror = () => { /* keep-alives/hiccups are fine */ };
+        } catch {}
+      },
+
+      
+      handleDetections(msg){
+        if(!this.screen || !this.rig) return;
+
+        // Source image size from server (e.g., 640x640)
+        const imgW = msg.width ?? msg.image_width ?? this.mjpeg?._w ?? 1;
+        const imgH = msg.height ?? msg.image_height ?? this.mjpeg?._h ?? 1;
+        const boxes = msg.detections ?? msg.boxes ?? msg.objects ?? [];
+
+        // Clear previous lines
+        while (this.detLines.children.length) {
+          const c = this.detLines.children.pop();
+          c.geometry?.dispose?.();
+          c.material?.dispose?.();
+        }
+
+        for (const det of boxes) {
+          const bb = det.bbox ?? det;
+
+          // Parse bbox (server is xyxy in pixel coords: [left, top, right, bottom])
+          let [u, v] = bboxToCenterUV(bb, imgW, imgH);
+          // IMPORTANT: do NOT compensate aspect here — the texture fills the plane.
+          // [u,v] are already in the same 0..1 space as the plane’s UVs.
+
+          // UV -> world on the feed plane
+          const hit = uvToWorldOnScreen(this.screen, this.feed.w, this.feed.h, u, v);
+
+          // Green line from virtual camera origin
+          const lineGeo = new THREE.BufferGeometry().setFromPoints([
+            this.rig.origin.clone(),
+            hit
+          ]);
+          const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff66, depthTest: true, depthWrite: false });
+          this.detLines.add(new THREE.Line(lineGeo, lineMat));
+        }
       },
 
       async acquireLocation(){
