@@ -16,15 +16,18 @@
   </script>
 
   <style>
-    html, body { height: 100%; margin: 0; background: #0b0f14; }
-    canvas { display: block; }
-    .attribution { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: #aab3c2; opacity: 0.85; }
+    html, body { height: 100%; margin: 0; background: #0b0f14; overflow: hidden; }
+    /* Full-viewport WebGL canvas */
+    #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+    /* Keep offscreen tile canvas hidden; style doesn't matter but keep consistent */
+    #tileCanvas { display: none; }
+    .attribution { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: #aab3c2; opacity: 0.85; z-index: 40; }
   </style>
 </head>
 
 <body x-data="hud()" class="overflow-hidden">
-  <!-- HUD -->
-  <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3">
+  <!-- HUD (pinned on top) -->
+  <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3 z-50">
     <div class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700">
       <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
       <div class="mt-1 text-sm">
@@ -33,22 +36,22 @@
         <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'" x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
       </div>
       <div class="mt-2 flex gap-2">
-        <button @click="toggleFrustum()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
-        <button @click="recenter()" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Recenter</button>
-      </div>
+  <!-- Controls hidden per request; keep toggle wired for future -->
+  <button @click="toggleFrustum()" class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
+</div>
     </div>
   </div>
 
   <div class="attribution">Map data © <a class="underline" href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>
 
   <canvas id="scene"></canvas>
-  <canvas id="tileCanvas" width="768" height="768" style="display:none"></canvas>
+  <canvas id="tileCanvas" width="768" height="768"></canvas>
 
   <script type="module">
     import * as THREE from "three";
     import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
 
-    // ---------------- Slippy map
+    // ---------- Slippy map ----------
     const d2r = d => d * Math.PI / 180;
     function latLonToTileXY(lat, lon, z) {
       const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
@@ -63,13 +66,13 @@
       const ctx = canvas.getContext('2d');
       let ok = 0;
       const loads = [];
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
         const url = `https://tile.openstreetmap.org/${zoom}/${cx+dx}/${cy+dy}.png`;
         loads.push(new Promise(res => {
-          const img = new Image(); img.crossOrigin = 'anonymous';
-          img.onload = () => { ctx.drawImage(img, (dx+1)*tileSize, (dy+1)*tileSize); ok++; res(); };
-          img.onerror = () => res();
-          img.src = url;
+          const img = new Image(); img.crossOrigin='anonymous';
+          img.onload=()=>{ ctx.drawImage(img,(dx+1)*tileSize,(dy+1)*tileSize); ok++; res(); };
+          img.onerror=()=>res();
+          img.src=url;
         }));
       }
       await Promise.all(loads);
@@ -77,7 +80,7 @@
       return canvas;
     }
 
-    // ---------------- MJPEG (canvas-backed, recreate texture on resize)
+    // ---------- MJPEG (canvas-backed, recreate texture on resize) ----------
     class MJPEGTexture {
       constructor(url) {
         this.url = url;
@@ -87,12 +90,10 @@
         this.texture = new THREE.CanvasTexture(this.canvas);
         this._setupTex(this.texture);
 
-        this.ok = false; this.fps = 0;
-        this._frames = 0; this._last = performance.now();
-        this._w = 0; this._h = 0;
-        this._consumers = new Set();
+        this.ok=false; this.fps=0; this._frames=0; this._last=performance.now();
+        this._w=0; this._h=0; this._consumers=new Set();
       }
-      _setupTex(tex) {
+      _setupTex(tex){
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;
@@ -101,121 +102,95 @@
         tex.flipY = true;
         tex.needsUpdate = true;
       }
-      attach(material) {
+      attach(material){
         material.map = this.texture;
         material.needsUpdate = true;
         this._consumers.add(material);
       }
-      _recreateTextureForSize(w, h) {
-        // fresh canvas to avoid Chrome copy-subtexture edge cases
+      _recreateTextureForSize(w,h){
         const newCanvas = document.createElement('canvas');
-        newCanvas.width = w; newCanvas.height = h;
-        this.canvas = newCanvas;
-        this.ctx = newCanvas.getContext('2d');
-
-        const oldTex = this.texture;
+        newCanvas.width=w; newCanvas.height=h;
+        this.canvas=newCanvas; this.ctx=newCanvas.getContext('2d');
+        const old = this.texture;
         this.texture = new THREE.CanvasTexture(this.canvas);
         this._setupTex(this.texture);
-        if (oldTex) oldTex.dispose();
-
-        for (const mat of this._consumers) {
-          mat.map = this.texture;
-          mat.needsUpdate = true;
-        }
+        if (old) old.dispose();
+        for (const m of this._consumers){ m.map=this.texture; m.needsUpdate=true; }
       }
-      async start(onStatus) {
-        try {
-          const resp = await fetch(this.url, { mode: 'cors' });
-          if (!resp.body) throw new Error('no body');
+      async start(onStatus){
+        try{
+          const resp = await fetch(this.url,{mode:'cors'});
+          if(!resp.body) throw new Error('no body');
           const reader = resp.body.getReader();
-          let buf = new Uint8Array(0);
-          const SOI = [0xFF,0xD8], EOI = [0xFF,0xD9];
-          const find = (b,m)=>{ for (let i=0;i<b.length-1;i++) if (b[i]===m[0]&&b[i+1]===m[1]) return i; return -1; };
-
-          this.ok = true; onStatus?.(this);
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (!value) continue;
-
-            const tmp = new Uint8Array(buf.length + value.length);
-            tmp.set(buf); tmp.set(value, buf.length); buf = tmp;
-
-            while (true) {
-              const s = find(buf, SOI), e = find(buf, EOI);
-              if (s >= 0 && e > s) {
-                const frame = buf.slice(s, e+2);
-                buf = buf.slice(e+2);
-                try {
-                  const bmp = await createImageBitmap(new Blob([frame], { type: 'image/jpeg' }), { imageOrientation: 'from-image' });
-                  const w = bmp.width|0, h = bmp.height|0;
-                  if (!w || !h) continue;
-
-                  if (w !== this._w || h !== this._h) {
-                    this._w = w; this._h = h;
-                    this._recreateTextureForSize(w, h);
-                  }
-
-                  this.ctx.drawImage(bmp, 0, 0, this._w, this._h);
-                  this.texture.needsUpdate = true;
-
-                  this._frames++;
-                  const now = performance.now();
-                  if (now - this._last > 1000) {
-                    this.fps = (this._frames * 1000) / (now - this._last);
-                    this._frames = 0; this._last = now; onStatus?.(this);
-                  }
-                } catch { /* bad frame, ignore */ }
+          let buf=new Uint8Array(0);
+          const SOI=[0xFF,0xD8], EOI=[0xFF,0xD9];
+          const find=(b,m)=>{for(let i=0;i<b.length-1;i++) if(b[i]===m[0]&&b[i+1]===m[1]) return i; return -1;};
+          this.ok=true; onStatus?.(this);
+          while(true){
+            const {value,done}=await reader.read(); if(done) break;
+            if(!value) continue;
+            const tmp=new Uint8Array(buf.length+value.length); tmp.set(buf); tmp.set(value,buf.length); buf=tmp;
+            while(true){
+              const s=find(buf,SOI), e=find(buf,EOI);
+              if(s>=0 && e>s){
+                const frame=buf.slice(s,e+2); buf=buf.slice(e+2);
+                try{
+                  const bmp=await createImageBitmap(new Blob([frame],{type:'image/jpeg'}),{imageOrientation:'from-image'});
+                  const w=bmp.width|0, h=bmp.height|0;
+                  if(!w||!h) continue;
+                  if(w!==this._w||h!==this._h){ this._w=w; this._h=h; this._recreateTextureForSize(w,h); }
+                  this.ctx.drawImage(bmp,0,0,this._w,this._h);
+                  this.texture.needsUpdate=true;
+                  this._frames++; const now=performance.now();
+                  if(now-this._last>1000){ this.fps=(this._frames*1000)/(now-this._last); this._frames=0; this._last=now; onStatus?.(this); }
+                }catch{}
               } else break;
             }
           }
-        } catch {
-          this.ok = false; this.fps = 0; onStatus?.(this);
-        }
+        }catch{ this.ok=false; this.fps=0; onStatus?.(this); }
       }
     }
 
-    // ---------------- Three bootstrap
-    function bootScene(hooks) {
-      const canvas = document.getElementById('scene');
-      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x0b0f14);
-
-      const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 2000);
-      camera.position.set(0, 160, 260);
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.set(0, 0, 0);
+    // ---------- Three bootstrap ----------
+    function bootScene(hooks){
+      const canvas=document.getElementById('scene');
+      const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const scene=new THREE.Scene();
+      scene.background=new THREE.Color(0x0b0f14);
+      const camera=new THREE.PerspectiveCamera(60,2,0.1,2000);
+      camera.position.set(0,160,260);
+      const controls=new OrbitControls(camera,renderer.domElement);
+      // Stabilize desktop zoom/pan. DevTools often changes rAF timing and input deltas,
+      // which is why things felt smoother when it was open. Normalize against DPR and
+      // use damping + screen-space panning for consistent feel.
+      const DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+      controls.target.set(0,0,0);
       controls.enableDamping = true;
-
-      scene.add(new THREE.HemisphereLight(0xbcd1ff, 0x232b35, 0.6));
-      const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-      dir.position.set(80,120,60); scene.add(dir);
-
+      controls.dampingFactor = 0.15;
+      controls.screenSpacePanning = true;
+      controls.zoomToCursor = true;
+      controls.zoomSpeed = 0.75 / DPR;     // reduce scroll zoom sensitivity on hi‑DPI
+      controls.panSpeed  = 0.75 / DPR;     // reduce mouse pan sensitivity on hi‑DPI
+      controls.minDistance = 20;           // sensible dolly clamps
+      controls.maxDistance = 1200;
+      controls.update();
+      scene.add(new THREE.HemisphereLight(0xbcd1ff,0x232b35,0.6));
+      const dir=new THREE.DirectionalLight(0xffffff,0.9); dir.position.set(80,120,60); scene.add(dir);
       function resize(){
-        const w = innerWidth, h = innerHeight;
-        camera.aspect = w/h; camera.updateProjectionMatrix();
+        const w=window.innerWidth, h=window.innerHeight;
+        camera.aspect=w/h; camera.updateProjectionMatrix();
+        // Only update drawing buffer size; CSS is locked to 100vw/100vh
         renderer.setSize(w,h,false);
       }
-      addEventListener('resize', resize); resize();
-
-      const clock = new THREE.Clock();
-      (function tick(){
-        hooks?.update?.(clock.getDelta());
-        controls.update();
-        renderer.render(scene, camera);
-        requestAnimationFrame(tick);
-      })();
-
-      return { scene, camera, renderer, controls };
+      addEventListener('resize',resize); resize();
+      const clock=new THREE.Clock();
+      (function tick(){ hooks?.update?.(clock.getDelta()); controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick); })();
+      return {scene,camera};
     }
 
-    // ---------------- Frustum gizmo that fits the live-feed plane
-    function makeRigForScreen(scene, screen, opts = {}) {
+    // ---------- Frustum gizmo that fits the live-feed plane ----------
+    function makeRigForScreen(scene, screen, opts = {}){
       const fovDeg = opts.fovDeg ?? 50;
       const far    = opts.far ?? 60;
       const color  = opts.color ?? 0xf6c560;
@@ -251,7 +226,9 @@
       const nearRect = new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL,cTR,cBR,cBL,cTL]), mat);
       const farRect  = new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL,fTR,fBR,fBL,fTL]), mat);
       const edges    = new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]), mat);
+        new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]),
+        mat
+      );
 
       const camGlyph = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([
@@ -275,101 +252,88 @@
       return { group, origin };
     }
 
-    // ---------------- Alpine app
-    window.hud = () => ({
-      geo: { ok: false, lat: 45.813, lon: 15.977 },
-      map: { ready: false, mesh: null, zoom: 16 },
-      stream: { ok: false, fps: 0 },
-      three: null,
-      rig: null,
-      mjpeg: null,
-      frustumVisible: true,
+    // ---------- Alpine app ----------
+    window.hud=()=>({
+      geo:{ok:false,lat:45.813,lon:15.977},
+      map:{ready:false,mesh:null,zoom:16},
+      stream:{ok:false,fps:0},
+      three:null, rig:null, mjpeg:null, frustumVisible:true,
 
-      async init() {
-        this.three = bootScene({ update: () => {} });
-        this.three.camera.lookAt(0, 0, 0);
+      async init(){
+        this.three=bootScene({update:()=>{}});
+        this.three.camera.lookAt(0,0,0);
 
         await this.acquireLocation();
         await this.loadMapPlane();
 
         // Live feed
-        this.mjpeg = new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
-        this.mjpeg.start(s => { this.stream.ok = s.ok; this.stream.fps = s.fps; });
+        this.mjpeg=new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
+        this.mjpeg.start(s=>{ this.stream.ok=s.ok; this.stream.fps=s.fps; });
 
-        // Live-feed plane (keep how you had it)
-        const feedW = 80, feedH = 60;
-        const screenGeom = new THREE.PlaneGeometry(feedW, feedH);
-        const screenMat  = new THREE.MeshBasicMaterial({
-          side: THREE.DoubleSide,
-          depthTest: false,
-          depthWrite: false,
-          toneMapped: false,
-          transparent: false
+        // Live-feed plane
+        const feedW=80, feedH=60;
+        const lift = feedH * 0.5;            // raise by half its height
+        const screenGeom=new THREE.PlaneGeometry(feedW,feedH);
+        const screenMat=new THREE.MeshBasicMaterial({
+          side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false
         });
-        // bind via attach() so if the texture is recreated on resize, material stays wired
         this.mjpeg.attach(screenMat);
 
-        const screen = new THREE.Mesh(screenGeom, screenMat);
-        screen.position.set(0, 5, 0);              // above the map
-        screen.rotation.set(-0.15, 0.45, 0.0);     // your tilt; adjust as needed
+        const screen=new THREE.Mesh(screenGeom,screenMat);
+        screen.position.set(0, 5 + lift, 0); // lift above ground so it doesn't clip
+        screen.rotation.set(-0.15, 0.45, 0.0);
         this.three.scene.add(screen);
 
-        // Frustum gizmo fitted to the screen
-        this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg: 50, far: 60, color: 0xf6c560 });
+        // Frustum gizmo fitted to the raised screen (origin follows automatically)
+        this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:60, color:0xf6c560 });
         this.rig.group.visible = this.frustumVisible;
       },
 
-      async acquireLocation() {
-        const params = new URLSearchParams(location.search);
-        if (params.get('lat') && params.get('lon')) {
-          this.geo.ok = true; this.geo.lat = parseFloat(params.get('lat')); this.geo.lon = parseFloat(params.get('lon')); return;
+      async acquireLocation(){
+        const params=new URLSearchParams(location.search);
+        if(params.get('lat') && params.get('lon')){
+          this.geo.ok=true; this.geo.lat=parseFloat(params.get('lat')); this.geo.lon=parseFloat(params.get('lon')); return;
         }
-        const p = new Promise(resolve => {
-          if (!('geolocation' in navigator)) return resolve(false);
+        const p=new Promise(resolve=>{
+          if(!('geolocation' in navigator)) return resolve(false);
           navigator.geolocation.getCurrentPosition(
-            pos => { this.geo.ok = true; this.geo.lat = pos.coords.latitude; this.geo.lon = pos.coords.longitude; resolve(true); },
-            () => resolve(false),
-            { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 }
+            pos=>{ this.geo.ok=true; this.geo.lat=pos.coords.latitude; this.geo.lon=pos.coords.longitude; resolve(true); },
+            ()=>resolve(false), {enableHighAccuracy:true,timeout:5000,maximumAge:30000}
           );
         });
         await p;
       },
 
-      async loadMapPlane() {
-        try {
-          const patch = await buildTilePatch({ lat: this.geo.lat, lon: this.geo.lon }, this.map.zoom);
-          const tex = new THREE.CanvasTexture(patch);
-          tex.colorSpace = THREE.SRGBColorSpace;
-          tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-          tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+      async loadMapPlane(){
+        try{
+          const patch=await buildTilePatch({lat:this.geo.lat,lon:this.geo.lon},this.map.zoom);
+          const tex=new THREE.CanvasTexture(patch);
+          tex.colorSpace=THREE.SRGBColorSpace;
+          tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;
+          tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
 
-          const planeSize = 1000, aspect = patch.height / patch.width;
-          const ground = new THREE.Mesh(
-            new THREE.PlaneGeometry(planeSize, planeSize * aspect),
-            new THREE.MeshStandardMaterial({ map: tex })
+          const planeSize=1000, aspect=patch.height/patch.width;
+          const ground=new THREE.Mesh(
+            new THREE.PlaneGeometry(planeSize,planeSize*aspect),
+            new THREE.MeshStandardMaterial({map:tex})
           );
-          ground.rotation.x = -Math.PI / 2;
+          ground.rotation.x=-Math.PI/2;
 
-          if (this.map.mesh) {
+          if(this.map.mesh){
             this.three.scene.remove(this.map.mesh);
             this.map.mesh.geometry.dispose();
             this.map.mesh.material.map.dispose();
             this.map.mesh.material.dispose();
           }
           this.three.scene.add(ground);
-          this.map.mesh = ground;
-          this.map.ready = true;
-        } catch { this.map.ready = false; }
+          this.map.mesh=ground; this.map.ready=true;
+        }catch{ this.map.ready=false; }
       },
 
-      toggleFrustum() {
-        this.frustumVisible = !this.frustumVisible;
-        if (this.rig?.group) this.rig.group.visible = this.frustumVisible;
+      toggleFrustum(){
+        this.frustumVisible=!this.frustumVisible;
+        if(this.rig?.group) this.rig.group.visible=this.frustumVisible;
       },
-
-      async recenter() {
-        await this.loadMapPlane();
-      }
     });
   </script>
 
