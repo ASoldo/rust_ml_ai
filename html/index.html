@@ -76,8 +76,9 @@
     import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
     // ----- Colors -----
-    const CAMERA_GREEN = 0x22c55e;  // same as virtual camera ray
+    const CAMERA_GREEN = 0x4ade80;  // lime green indicator
     const CAMERA_ORANGE= 0xf6c560;  // frustum / bearing indicator
+    const CAMERA_YAW_OFFSET = Math.PI; // ensures yaw=0 aligns with map north
     const YELLOW       = 0xfacc15;  // yellow caret + "N"
     const BLUE_GLYPH   = 0x89b4fa;  // light blue (reuse from previous glyph)
 
@@ -420,7 +421,7 @@
 
       screen:null,
       feed:{w:80, h:60},
-      cameraYaw: 0.45,
+      cameraYaw: 0.0,
 
       detLines:null,      // line group
       detDots:null,       // dot group
@@ -531,7 +532,7 @@
       setCameraYaw(yawRad){
         this.cameraYaw = yawRad;
         if(this.screen){
-          this.screen.rotation.set(0, this.cameraYaw, 0);
+          this.screen.rotation.set(0, this.cameraYaw + CAMERA_YAW_OFFSET, 0);
         }
         this.updateCameraBearingSphere();
       },
