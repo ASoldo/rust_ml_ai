@@ -117,7 +117,7 @@
 
       const mesh = makeTextPlane(text, scale, color, bold);
       mesh.position.set(0, height, radius);
-      mesh.rotation.set(-Math.PI / 2, Math.PI, 0);
+      mesh.rotation.set(Math.PI / 2, Math.PI, Math.PI);
       pivot.add(mesh);
 
       return { pivot, mesh };
