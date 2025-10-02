@@ -4,16 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recon HUD — Map + MJPEG Frustum</title>
-
-  <!-- Note: CDN warning is informational. For prod, switch to Tailwind CLI/PostCSS. -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
-    }
-  }
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
   </script>
 
   <style>
@@ -27,17 +21,48 @@
 <body x-data="hud()" class="overflow-hidden">
   <!-- HUD (pinned on top) -->
   <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3 z-50">
-    <div class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700">
+    <!-- Single Recon Status card WITH Detections inside -->
+    <div class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700 min-w-[280px]">
       <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
-      <div class="mt-1 text-sm">
+      <div class="mt-1 text-sm space-y-0.5">
         <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'" x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
         <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'" x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
         <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'" x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
       </div>
+
+      <!-- Optional controls -->
       <div class="mt-2 flex gap-2">
-        <!-- Controls hidden per request; keep wiring for later if needed -->
         <button @click="toggleFrustum()" class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
       </div>
+
+      <!-- Detections section (inside the same card) -->
+      <div class="mt-3" x-show="uiDetections.length > 0" x-transition>
+        <div class="text-xs uppercase tracking-wider text-slate-400">Detections</div>
+        <div class="mt-1 text-sm">
+          <div class="text-slate-300 mb-1">
+            Count: <span class="text-slate-100 font-semibold" x-text="uiDetections.length"></span>
+          </div>
+          <!-- Scrollable list -->
+          <div class="max-h-48 overflow-y-auto pr-1">
+            <template x-for="d in uiDetections" :key="d.key">
+              <div class="py-1 grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 items-center border-b border-slate-700/40 last:border-0">
+                <div class="w-3 h-3 rounded-full ring-1 ring-slate-700/60" :style="`background:${d.hex};`"></div>
+                <div>
+                  <div class="flex gap-2 items-baseline">
+                    <span class="font-medium" x-text="d.label"></span>
+                    <span class="text-xs text-slate-400">score <span x-text="d.score.toFixed(2)"></span></span>
+                  </div>
+                  <div class="text-xs text-slate-400">
+                    center <span x-text="d.u.toFixed(2)"></span>, <span x-text="d.v.toFixed(2)"></span>
+                    · box <span x-text="`${d.w|0}×${d.h|0}`"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+      <!-- /Detections -->
     </div>
   </div>
 
@@ -50,281 +75,112 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
-    // ----- 3D Azimuth dial anchored at virtual camera ground point -----
+    // ----- 3D dial helpers -----
     function makeCircle(radius, segments=256, color=0x475569, width=2){
-      const pts = [];
-      for(let i=0;i<=segments;i++){
-        const t = (i/segments) * Math.PI*2;
-        pts.push(new THREE.Vector3(Math.cos(t)*radius, 0, Math.sin(t)*radius));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      const mat = new THREE.LineBasicMaterial({ color, linewidth: width, depthTest:true, depthWrite:false });
-      const line = new THREE.Line(geo, mat);
-      return line;
+      const pts=[]; for(let i=0;i<=segments;i++){ const t=(i/segments)*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(t)*radius,0,Math.sin(t)*radius)); }
+      const geo=new THREE.BufferGeometry().setFromPoints(pts);
+      return new THREE.Line(geo, new THREE.LineBasicMaterial({ color, linewidth: width, depthTest:true, depthWrite:false }));
     }
     function makeTicks(radius, stepDeg=5){
-      const positions = [];
-      for(let deg=0; deg<360; deg+=stepDeg){
-        const is30 = deg % 30 === 0;
-        const is10 = deg % 10 === 0;
-        const len = is30 ? 1.8 : is10 ? 1.2 : 0.6; // world units
-        const a = THREE.MathUtils.degToRad(deg);
-        const cx = Math.cos(a), sz = Math.sin(a);
-        const r1 = radius - len;
-        const r2 = radius;
-        positions.push(r1*cx, 0, r1*sz,  r2*cx, 0, r2*sz);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      const mat = new THREE.LineBasicMaterial({ color: 0x94a3b8, depthTest:true, depthWrite:false });
-      return new THREE.LineSegments(geo, mat);
+      const positions=[]; for(let deg=0;deg<360;deg+=stepDeg){ const is30=deg%30===0, is10=deg%10===0, len=is30?1.8:is10?1.2:0.6;
+        const a=THREE.MathUtils.degToRad(deg), cx=Math.cos(a), sz=Math.sin(a), r1=radius-len, r2=radius;
+        positions.push(r1*cx,0,r1*sz, r2*cx,0,r2*sz); }
+      const geo=new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color:0x94a3b8, depthTest:true, depthWrite:false }));
     }
     function makeTextPlane(text, scale=3, color='#e2e8f0', bold=false){
-      const cw=256, ch=128;
-      const c = document.createElement('canvas'); c.width=cw; c.height=ch;
-      const ctx=c.getContext('2d'); ctx.clearRect(0,0,cw,ch);
-      ctx.fillStyle='rgba(0,0,0,0)'; ctx.fillRect(0,0,cw,ch);
-      ctx.fillStyle=color;
-      ctx.font = `${bold? '700': '600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText(text, cw/2, ch/2);
-      const tex = new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.needsUpdate=true; tex.transparent=true;
-      const aspect = cw/ch; const height = scale; const width = height * aspect;
-      const geo = new THREE.PlaneGeometry(width, height);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent:true, depthTest:true, depthWrite:false });
-      const m = new THREE.Mesh(geo, mat);
-      // lay flat (horizontal) like the dial
-      m.rotation.x = -Math.PI/2;
-      return m;
+      const cw=256, ch=128, c=document.createElement('canvas'); c.width=cw; c.height=ch; const ctx=c.getContext('2d');
+      ctx.clearRect(0,0,cw,ch); ctx.fillStyle=color; ctx.font=`${bold?'700':'600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
+      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text, cw/2, ch/2);
+      const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.transparent=true;
+      const aspect=cw/ch, height=scale, width=height*aspect;
+      const m=new THREE.Mesh(new THREE.PlaneGeometry(width,height), new THREE.MeshBasicMaterial({ map:tex, transparent:true, depthTest:true, depthWrite:false }));
+      m.rotation.x=-Math.PI/2; return m;
     }
-    function makeAzimuthDial(opts){
-      const { scene, center, radius=22, y=2 } = opts;
-      const g = new THREE.Group();
-      g.position.set(center.x, y, center.z);
-      // Build rings
-      g.add(makeCircle(radius, 256, 0x475569, 2));
-      g.add(makeCircle(radius-2.4, 256, 0x334155, 1));
-      // Ticks
-      g.add(makeTicks(radius, 5));
-      // Numbers every 30°
-      for(let deg=0; deg<360; deg+=30){
-        const a = THREE.MathUtils.degToRad(deg);
-        const rr = radius - 3.6;
-        const x = Math.cos(a)*rr;
-        const z = Math.sin(a)*rr;
-        const lbl = makeTextPlane(String(deg), 2.4, '#e2e8f0', false);
-        lbl.position.set(x, 0.01, z); // tiny lift to avoid z-fight
-        g.add(lbl);
-      }
-      // Cardinals
-      const cards = [['N',0],['E',90],['S',180],['W',270]];
-      for(const [t,deg] of cards){
-        const a = THREE.MathUtils.degToRad(deg);
-        const rr = radius - 6.0;
-        const x = Math.cos(a)*rr;
-        const z = Math.sin(a)*rr;
-        const lbl = makeTextPlane(t, 3.2, '#f8fafc', true);
-        lbl.position.set(x, 0.02, z);
-        g.add(lbl);
-      }
-      // North caret line
-      const caret = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0,0, radius+1.2),
-        new THREE.Vector3(0,0, radius-1.5)
-      ]);
-      g.add(new THREE.Line(caret, new THREE.LineBasicMaterial({ color:0xfacc15, linewidth:2 })));
-      scene.add(g);
-      return g;
+    function makeAzimuthDial({scene, center, radius=22, y=2}){
+      const g=new THREE.Group(); g.position.set(center.x,y,center.z);
+      g.add(makeCircle(radius,256,0x475569,2)); g.add(makeCircle(radius-2.4,256,0x334155,1)); g.add(makeTicks(radius,5));
+      for(let deg=0; deg<360; deg+=30){ const a=THREE.MathUtils.degToRad(deg), rr=radius-3.6, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+        const lbl=makeTextPlane(String(deg), 2.4, '#e2e8f0', false); lbl.position.set(x,0.01,z); g.add(lbl); }
+      for(const [t,deg] of [['N',0],['E',90],['S',180],['W',270]]){ const a=THREE.MathUtils.degToRad(deg), rr=radius-6.0, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+        const lbl=makeTextPlane(t,3.2,'#f8fafc',true); lbl.position.set(x,0.02,z); g.add(lbl); }
+      const caret=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,radius+1.2),new THREE.Vector3(0,0,radius-1.5)]);
+      g.add(new THREE.Line(caret,new THREE.LineBasicMaterial({ color:0xfacc15, linewidth:2 }))); scene.add(g); return g;
     }
 
-    // Map a UV coordinate on the live-feed plane to a world position on that plane
+    // Map UV -> world on live-feed plane
     function uvToWorldOnScreen(screen, feedW, feedH, u, v){
-      // PlaneGeometry is centered with X=width, Y=height, Z forward
-      const local = new THREE.Vector3(
-        (u - 0.5) * feedW,
-        (0.5 - v) * feedH,
-        0
-      );
+      const local=new THREE.Vector3((u-0.5)*feedW, (0.5-v)*feedH, 0);
       return local.applyMatrix4(screen.matrixWorld);
     }
 
-  // Normalize a bbox to center (u,v) in [0..1].
-  // Supports array/object; xyxy or xywh; pixels or normalized.
-  function bboxToCenterUV(bb, imgW, imgH){
-    // Helper: clamp 0..1
-    const clamp01 = (t)=> Math.min(1, Math.max(0, t));
-
-    // Object forms
-    if (bb && typeof bb === 'object' && !Array.isArray(bb)) {
-      // Explicit xyxy keys
-      if (('x1' in bb && 'y1' in bb && 'x2' in bb && 'y2' in bb) ||
-          ('left' in bb && 'top' in bb && 'right' in bb && 'bottom' in bb)) {
-        const x1 = bb.x1 ?? bb.left, y1 = bb.y1 ?? bb.top;
-        const x2 = bb.x2 ?? bb.right, y2 = bb.y2 ?? bb.bottom;
-        const norm = x1<=1 && y1<=1 && x2<=1 && y2<=1;
-        const cx = norm ? (x1+x2)*0.5 : (x1+x2)*0.5 / imgW;
-        const cy = norm ? (y1+y2)*0.5 : (y1+y2)*0.5 / imgH;
-        return [clamp01(cx), clamp01(cy)];
-      }
-      // Explicit xywh keys
-      if (('x' in bb && 'y' in bb && ('w' in bb || 'width' in bb) && ('h' in bb || 'height' in bb))) {
-        const x = bb.x ?? bb.left ?? 0;
-        const y = bb.y ?? bb.top  ?? 0;
-        const w = bb.w ?? bb.width ?? 0;
-        const h = bb.h ?? bb.height?? 0;
-        const norm = x<=1 && y<=1 && w<=1 && h<=1;
-        const cx = norm ? (x + w*0.5) : (x + w*0.5) / imgW;
-        const cy = norm ? (y + h*0.5) : (y + h*0.5) / imgH;
-        return [clamp01(cx), clamp01(cy)];
-      }
-    }
-
-    // Array form
-    if (Array.isArray(bb) && bb.length === 4){
-      const [a,b,c,d] = bb;
-
-      // First: try xyxy in pixels (most robust test)
-      const looksXYXYpx = (a < c) && (b < d) && (c <= imgW+1) && (d <= imgH+1);
-      if (looksXYXYpx) {
-        const cx = (a + c) * 0.5 / imgW;
-        const cy = (b + d) * 0.5 / imgH;
-        return [clamp01(cx), clamp01(cy)];
-      }
-
-      // Next: try normalized xyxy (all <=1 and a<c, b<d)
-      const looksXYXYnorm = (a<=1 && b<=1 && c<=1 && d<=1) && (a < c) && (b < d);
-      if (looksXYXYnorm) {
-        const cx = (a + c) * 0.5;
-        const cy = (b + d) * 0.5;
-        return [clamp01(cx), clamp01(cy)];
-      }
-
-      // Fallback: xywh (pixels or normalized)
-      const norm = a<=1 && b<=1 && c<=1 && d<=1;
-      const cx = norm ? (a + c*0.5) : (a + c*0.5) / imgW;
-      const cy = norm ? (b + d*0.5) : (b + d*0.5) / imgH;
-      return [clamp01(cx), clamp01(cy)];
-    }
-
-    // Last resort: center of frame
-    return [0.5, 0.5];
-  }
-
-      // --- Aspect compensation ---
-      // Adjust (u,v) from source image aspect to how the texture is displayed on a plane of (feedW x feedH).
-      // If the plane is wider than the source, we pillarbox (shrink X range towards center);
-      // if the plane is taller, we letterbox (shrink Y range towards center).
-      function compensateAspect(u, v, srcW, srcH, feedW, feedH){
-        const srcA = srcW / srcH;
-        const planeA = feedW / feedH;
-        let uu = u, vv = v;
-        if (planeA > srcA){
-          // plane wider -> pillarbox horizontally
-          const scaleX = srcA / planeA; // < 1
-          uu = 0.5 + (u - 0.5) * scaleX;
-        } else if (planeA < srcA){
-          // plane taller -> letterbox vertically
-          const scaleY = planeA / srcA; // < 1
-          vv = 0.5 + (v - 0.5) * scaleY;
+    // bbox center to normalized [0..1] UV
+    function bboxToCenterUV(bb, imgW, imgH){
+      const clamp01=t=>Math.min(1,Math.max(0,t));
+      if (bb && typeof bb==='object' && !Array.isArray(bb)) {
+        if (('x1'in bb && 'y1'in bb && 'x2'in bb && 'y2'in bb) || ('left'in bb && 'top'in bb && 'right'in bb && 'bottom'in bb)){
+          const x1=bb.x1 ?? bb.left, y1=bb.y1 ?? bb.top, x2=bb.x2 ?? bb.right, y2=bb.y2 ?? bb.bottom;
+          const norm=x1<=1 && y1<=1 && x2<=1 && y2<=1;
+          return [clamp01(((x1+x2)*0.5)/(norm?1:imgW)), clamp01(((y1+y2)*0.5)/(norm?1:imgH))];
         }
-        return [Math.min(1,Math.max(0,uu)), Math.min(1,Math.max(0,vv))];
+        if (('x'in bb && 'y'in bb && ('w'in bb || 'width'in bb) && ('h'in bb || 'height'in bb))){
+          const x=bb.x ?? bb.left ?? 0, y=bb.y ?? bb.top ?? 0, w=bb.w ?? bb.width ?? 0, h=bb.h ?? bb.height ?? 0;
+          const norm=x<=1 && y<=1 && w<=1 && h<=1;
+          return [clamp01((x+w*0.5)/(norm?1:imgW)), clamp01((y+h*0.5)/(norm?1:imgH))];
+        }
       }
-
-    // ---------- Slippy map ----------
-    const d2r = d => d * Math.PI / 180;
-    function latLonToTileXY(lat, lon, z) {
-      const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
-      const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1/Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z));
-      return { x, y };
+      if (Array.isArray(bb) && bb.length===4){
+        const [a,b,c,d]=bb, looksXYXYpx=(a<c)&&(b<d)&&(c<=imgW+1)&&(d<=imgH+1);
+        if (looksXYXYpx) return [clamp01((a+c)*0.5/imgW), clamp01((b+d)*0.5/imgH)];
+        const looksXYXYnorm=(a<=1&&b<=1&&c<=1&&d<=1)&&(a<c)&&(b<d);
+        if (looksXYXYnorm) return [clamp01((a+c)*0.5), clamp01((b+d)*0.5)];
+        const norm=a<=1&&b<=1&&c<=1&&d<=1;
+        return [clamp01((a+c*0.5)/(norm?1:imgW)), clamp01((b+d*0.5)/(norm?1:imgH))];
+      }
+      return [0.5,0.5];
     }
-    async function buildTilePatch({ lat, lon }, zoom=16) {
-      const { x: cx, y: cy } = latLonToTileXY(lat, lon, zoom);
-      const tileSize = 256, grid = 3;
-      const canvas = document.getElementById('tileCanvas');
-      canvas.width = tileSize * grid; canvas.height = tileSize * grid;
-      const ctx = canvas.getContext('2d');
-      let ok = 0;
-      const loads = [];
-      for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
-        const url = `https://tile.openstreetmap.org/${zoom}/${cx+dx}/${cy+dy}.png`;
-        loads.push(new Promise(res => {
-          const img = new Image(); img.crossOrigin='anonymous';
+
+    // ---------- map ----------
+    const d2r=d=>d*Math.PI/180;
+    function latLonToTileXY(lat,lon,z){ const x=Math.floor((lon+180)/360*Math.pow(2,z)); const y=Math.floor((1-Math.log(Math.tan(d2r(lat))+1/Math.cos(d2r(lat)))/Math.PI)/2*Math.pow(2,z)); return {x,y}; }
+    async function buildTilePatch({lat,lon},zoom=16){
+      const {x:cx,y:cy}=latLonToTileXY(lat,lon,zoom); const tileSize=256, grid=3;
+      const canvas=document.getElementById('tileCanvas'); canvas.width=tileSize*grid; canvas.height=tileSize*grid;
+      const ctx=canvas.getContext('2d'); let ok=0; const loads=[];
+      for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
+        const url=`https://tile.openstreetmap.org/${zoom}/${cx+dx}/${cy+dy}.png`;
+        loads.push(new Promise(res=>{ const img=new Image(); img.crossOrigin='anonymous';
           img.onload=()=>{ ctx.drawImage(img,(dx+1)*tileSize,(dy+1)*tileSize); ok++; res(); };
-          img.onerror=()=>res();
-          img.src=url;
-        }));
+          img.onerror=()=>res(); img.src=url; }));
       }
-      await Promise.all(loads);
-      if (!ok) throw new Error('No tiles loaded');
-      return canvas;
+      await Promise.all(loads); if(!ok) throw new Error('No tiles loaded'); return canvas;
     }
 
-    // ---------- MJPEG (canvas-backed, recreate texture on resize) ----------
-    class MJPEGTexture {
-      constructor(url) {
-        this.url = url;
-        this.canvas = document.createElement('canvas');
-        this.ctx = this.canvas.getContext('2d');
-
-        this.texture = new THREE.CanvasTexture(this.canvas);
-        this._setupTex(this.texture);
-
-        this.ok=false; this.fps=0; this._frames=0; this._last=performance.now();
-        this._w=0; this._h=0; this._consumers=new Set();
-      }
-      _setupTex(tex){
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.wrapS = THREE.ClampToEdgeWrapping;
-        tex.wrapT = THREE.ClampToEdgeWrapping;
-        tex.flipY = true;
-        tex.needsUpdate = true;
-      }
-      attach(material){
-        material.map = this.texture;
-        material.needsUpdate = true;
-        this._consumers.add(material);
-      }
-      _recreateTextureForSize(w,h){
-        const newCanvas = document.createElement('canvas');
-        newCanvas.width=w; newCanvas.height=h;
-        this.canvas=newCanvas; this.ctx=newCanvas.getContext('2d');
-        const old = this.texture;
-        this.texture = new THREE.CanvasTexture(this.canvas);
-        this._setupTex(this.texture);
-        if (old) old.dispose();
-        for (const m of this._consumers){ m.map=this.texture; m.needsUpdate=true; }
-      }
+    // ---------- MJPEG ----------
+    class MJPEGTexture{
+      constructor(url){ this.url=url; this.canvas=document.createElement('canvas'); this.ctx=this.canvas.getContext('2d');
+        this.texture=new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture);
+        this.ok=false; this.fps=0; this._frames=0; this._last=performance.now(); this._w=0; this._h=0; this._consumers=new Set(); }
+      _setupTex(tex){ tex.colorSpace=THREE.SRGBColorSpace; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping; tex.flipY=true; tex.needsUpdate=true; }
+      attach(material){ material.map=this.texture; material.needsUpdate=true; this._consumers.add(material); }
+      _recreateTextureForSize(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; this.canvas=c; this.ctx=c.getContext('2d');
+        const old=this.texture; this.texture=new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture); if(old) old.dispose();
+        for(const m of this._consumers){ m.map=this.texture; m.needsUpdate=true; } }
       async start(onStatus){
         try{
-          const resp = await fetch(this.url,{mode:'cors'});
-          if(!resp.body) throw new Error('no body');
-          const reader = resp.body.getReader();
-          let buf=new Uint8Array(0);
-          const SOI=[0xFF,0xD8], EOI=[0xFF,0xD9];
-          const find=(b,m)=>{for(let i=0;i<b.length-1;i++) if(b[i]===m[0]&&b[i+1]===m[1]) return i; return -1;};
+          const resp=await fetch(this.url,{mode:'cors'}); if(!resp.body) throw new Error('no body'); const reader=resp.body.getReader();
+          let buf=new Uint8Array(0); const SOI=[0xFF,0xD8], EOI=[0xFF,0xD9]; const find=(b,m)=>{for(let i=0;i<b.length-1;i++) if(b[i]===m[0]&&b[i+1]===m[1]) return i; return -1;};
           this.ok=true; onStatus?.(this);
-          while(true){
-            const {value,done}=await reader.read(); if(done) break;
-            if(!value) continue;
+          while(true){ const {value,done}=await reader.read(); if(done) break; if(!value) continue;
             const tmp=new Uint8Array(buf.length+value.length); tmp.set(buf); tmp.set(value,buf.length); buf=tmp;
-            while(true){
-              const s=find(buf,SOI), e=find(buf,EOI);
-              if(s>=0 && e>s){
-                const frame=buf.slice(s,e+2); buf=buf.slice(e+2);
-                try{
-                  const bmp=await createImageBitmap(new Blob([frame],{type:'image/jpeg'}),{imageOrientation:'from-image'});
-                  const w=bmp.width|0, h=bmp.height|0;
-                  if(!w||!h) continue;
+            while(true){ const s=find(buf,SOI), e=find(buf,EOI);
+              if(s>=0 && e>s){ const frame=buf.slice(s,e+2); buf=buf.slice(e+2);
+                try{ const bmp=await createImageBitmap(new Blob([frame],{type:'image/jpeg'}),{imageOrientation:'from-image'});
+                  const w=bmp.width|0, h=bmp.height|0; if(!w||!h) continue;
                   if(w!==this._w||h!==this._h){ this._w=w; this._h=h; this._recreateTextureForSize(w,h); }
-                  this.ctx.drawImage(bmp,0,0,this._w,this._h);
-                  this.texture.needsUpdate=true;
-                  this._frames++; const now=performance.now();
-                  if(now-this._last>1000){ this.fps=(this._frames*1000)/(now-this._last); this._frames=0; this._last=now; onStatus?.(this); }
-                }catch{}
-              } else break;
-            }
+                  this.ctx.drawImage(bmp,0,0,this._w,this._h); this.texture.needsUpdate=true;
+                  this._frames++; const now=performance.now(); if(now-this._last>1000){ this.fps=(this._frames*1000)/(now-this._last); this._frames=0; this._last=now; onStatus?.(this); }
+                }catch{} } else break; }
           }
         }catch{ this.ok=false; this.fps=0; onStatus?.(this); }
       }
@@ -333,100 +189,45 @@
     // ---------- Three bootstrap ----------
     function bootScene(hooks){
       const canvas=document.getElementById('scene');
-      const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      const scene=new THREE.Scene();
-      scene.background=new THREE.Color(0x0b0f14);
-      const camera=new THREE.PerspectiveCamera(60,2,0.1,2000);
-      camera.position.set(0,160,260);
+      const renderer=new THREE.WebGLRenderer({canvas,antialias:true}); renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+      const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0f14);
+      const camera=new THREE.PerspectiveCamera(60,2,0.1,2000); camera.position.set(0,160,260);
       const controls=new OrbitControls(camera,renderer.domElement);
-      // Normalize desktop zoom/pan
-      const DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
-      controls.target.set(0,0,0);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.15;
-      controls.screenSpacePanning = true;
-      controls.zoomToCursor = true;
-      controls.zoomSpeed = 0.75 / DPR;
-      controls.panSpeed  = 0.75 / DPR;
-      controls.minDistance = 20;
-      controls.maxDistance = 1200;
-      controls.update();
-      scene.add(new THREE.HemisphereLight(0xbcd1ff,0x232b35,0.6));
-      const dir=new THREE.DirectionalLight(0xffffff,0.9); dir.position.set(80,120,60); scene.add(dir);
-      function resize(){
-        const w=window.innerWidth, h=window.innerHeight;
-        camera.aspect=w/h; camera.updateProjectionMatrix();
-        renderer.setSize(w,h,false);
-      }
-      addEventListener('resize', resize);
-      resize();
-      const clock=new THREE.Clock();
-      (function tick(){ hooks?.update?.(clock.getDelta()); controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick); })();
+      const DPR=Math.max(1,Math.min(window.devicePixelRatio||1,2));
+      controls.target.set(0,0,0); controls.enableDamping=true; controls.dampingFactor=0.15; controls.screenSpacePanning=true; controls.zoomToCursor=true;
+      controls.zoomSpeed=0.75/DPR; controls.panSpeed=0.75/DPR; controls.minDistance=20; controls.maxDistance=1200; controls.update();
+      scene.add(new THREE.HemisphereLight(0xbcd1ff,0x232b35,0.6)); const dir=new THREE.DirectionalLight(0xffffff,0.9); dir.position.set(80,120,60); scene.add(dir);
+      function resize(){ const w=window.innerWidth,h=window.innerHeight; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h,false); }
+      addEventListener('resize', resize); resize();
+      const clock=new THREE.Clock(); (function tick(){ hooks?.update?.(clock.getDelta()); controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick); })();
       return {scene,camera};
     }
 
-    // ---------- Frustum gizmo that fits the live-feed plane ----------
+    // ---------- Frustum fitted to the live-feed plane ----------
     function makeRigForScreen(scene, screen, opts = {}){
-      const fovDeg = opts.fovDeg ?? 50;
-      const far    = opts.far ?? 60;
-      const color  = opts.color ?? 0xf6c560;
-
-      const params = screen.geometry.parameters;
-      const halfW = (params?.width ?? 1) * 0.5 * screen.scale.x;
-      const halfH = (params?.height ?? 1) * 0.5 * screen.scale.y;
-
-      const center = new THREE.Vector3(); screen.getWorldPosition(center);
-      const q = new THREE.Quaternion();   screen.getWorldQuaternion(q);
-
-      const n     = new THREE.Vector3(0,0,1).applyQuaternion(q).normalize();
-      const right = new THREE.Vector3(1,0,0).applyQuaternion(q).normalize();
-      const up    = new THREE.Vector3(0,1,0).applyQuaternion(q).normalize();
-
-      const cTL = center.clone().add(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
-      const cTR = center.clone().add(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
-      const cBL = center.clone().sub(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
-      const cBR = center.clone().sub(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
-
-      const dist = halfH / Math.tan(THREE.MathUtils.degToRad(fovDeg * 0.5));
-      const origin = center.clone().sub(n.clone().multiplyScalar(dist));
-
-      const farCenter = origin.clone().add(n.clone().multiplyScalar(far));
-      const s = far / dist;
-      const fTL = farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
-      const fTR = farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
-      const fBL = farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
-      const fBR = farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
-
-      const mat = new THREE.LineBasicMaterial({ color, depthTest: true, depthWrite: false });
-
-      const nearRect = new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL,cTR,cBR,cBL,cTL]), mat);
-      const farRect  = new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL,fTR,fBR,fBL,fTL]), mat);
-      const edges    = new THREE.LineSegments(
-        new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]),
-        mat
-      );
-
-      const camGlyph = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([
-          origin.clone().add(right.clone().multiplyScalar(0.6)),
-          origin,
-          origin.clone().add(right.clone().multiplyScalar(-0.6)),
-          origin.clone().add(up.clone().multiplyScalar(0.7))
-        ]),
-        new THREE.LineBasicMaterial({ color: 0x89b4fa, depthTest: true })
-      );
-
-      const normalLine = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([center, origin]),
-        new THREE.LineDashedMaterial({ color, dashSize: 2, gapSize: 1 })
-      );
-      normalLine.computeLineDistances();
-
-      const group = new THREE.Group();
-      group.add(nearRect, farRect, edges, camGlyph, normalLine);
-      scene.add(group);
-      return { group, origin };
+      const fovDeg=opts.fovDeg ?? 50, far=opts.far ?? 60, color=opts.color ?? 0xf6c560;
+      const p=screen.geometry.parameters, halfW=(p?.width ?? 1)*0.5*screen.scale.x, halfH=(p?.height ?? 1)*0.5*screen.scale.y;
+      const center=new THREE.Vector3(); screen.getWorldPosition(center); const q=new THREE.Quaternion(); screen.getWorldQuaternion(q);
+      const n=new THREE.Vector3(0,0,1).applyQuaternion(q).normalize(), right=new THREE.Vector3(1,0,0).applyQuaternion(q).normalize(), up=new THREE.Vector3(0,1,0).applyQuaternion(q).normalize();
+      const cTL=center.clone().add(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
+      const cTR=center.clone().add(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
+      const cBL=center.clone().sub(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
+      const cBR=center.clone().sub(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
+      const dist=halfH/Math.tan(THREE.MathUtils.degToRad(fovDeg*0.5)); const origin=center.clone().sub(n.clone().multiplyScalar(dist));
+      const farCenter=origin.clone().add(n.clone().multiplyScalar(far)); const s=far/dist;
+      const fTL=farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
+      const fTR=farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
+      const fBL=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
+      const fBR=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
+      const mat=new THREE.LineBasicMaterial({ color, depthTest:true, depthWrite:false });
+      const nearRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL,cTR,cBR,cBL,cTL]), mat);
+      const farRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL,fTR,fBR,fBL,fTL]), mat);
+      const edges=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]), mat);
+      const camGlyph=new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+        origin.clone().add(right.clone().multiplyScalar(0.6)), origin, origin.clone().add(right.clone().multiplyScalar(-0.6)), origin.clone().add(up.clone().multiplyScalar(0.7))
+      ]), new THREE.LineBasicMaterial({ color:0x89b4fa, depthTest:true }));
+      const normalLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([center,origin]), new THREE.LineDashedMaterial({ color, dashSize:2, gapSize:1 })); normalLine.computeLineDistances();
+      const group=new THREE.Group(); group.add(nearRect,farRect,edges,camGlyph,normalLine); scene.add(group); return { group, origin };
     }
 
     // ---------- Alpine app ----------
@@ -435,10 +236,15 @@
       map:{ready:false,mesh:null,zoom:16},
       stream:{ok:false,fps:0},
       three:null, rig:null, mjpeg:null, frustumVisible:true,
-      screen:null, // live-feed mesh
+
+      screen:null,
       feed:{w:80, h:60},
-      detLines:null, // group containing current detection lines
-      sse:null,      // EventSource
+
+      detLines:null,      // line group
+      detDots:null,       // dot group
+      detMat:null,        // stable line material
+      uiDetections:[],
+      sse:null,
 
       async init(){
         this.three=bootScene({update:()=>{}});
@@ -447,132 +253,118 @@
         await this.acquireLocation();
         await this.loadMapPlane();
 
-        // Live feed
         this.mjpeg=new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
         this.mjpeg.start(s=>{ this.stream.ok=s.ok; this.stream.fps=s.fps; });
 
-        // Live-feed plane (4:3 for visual)
-        const feedW=80, feedH=60; // keep for world-space mapping
-        this.feed = { w: feedW, h: feedH };
-        const lift = feedH * 0.5;
+        const feedW=80, feedH=60; this.feed={ w:feedW, h:feedH };
+        const lift=feedH*0.5;
         const screenGeom=new THREE.PlaneGeometry(feedW,feedH);
         const screenMat=new THREE.MeshBasicMaterial({ side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false });
         this.mjpeg.attach(screenMat);
-
         const screen=new THREE.Mesh(screenGeom,screenMat);
         screen.position.set(0, 5 + lift, 0);
         screen.rotation.set(0.0, 0.45, 0.0);
         this.three.scene.add(screen);
-        this.screen = screen;
+        this.screen=screen;
 
-        // Frustum gizmo fitted to the raised screen
         this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:60, color:0xf6c560 });
         this.rig.group.visible = this.frustumVisible;
 
-        // Azimuth dial anchored at virtual camera ground point, a few units up
-        const groundPoint = new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z);
-        this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: groundPoint, radius: 90, y: 2 });
+        this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x,0,this.rig.origin.z), radius: 90, y: 2 });
 
-        // Detection lines container
-        this.detLines = new THREE.Group();
-        this.three.scene.add(this.detLines);
+        this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
+        this.detDots  = new THREE.Group(); this.three.scene.add(this.detDots);
+        this.detMat   = new THREE.LineBasicMaterial({ color: 0x22c55e, depthTest:true, depthWrite:false }); // emerald-500
 
-        // SSE: /stream_detections
-        try {
-          this.sse = new EventSource('http://127.0.0.1:8080/stream_detections');
-          this.sse.onmessage = (ev) => {
-            if (!ev.data) return;
-            try { this.handleDetections(JSON.parse(ev.data)); } catch {}
-          };
-          this.sse.onerror = () => { /* keep-alives/hiccups are fine */ };
-        } catch {}
+        try{
+          this.sse=new EventSource('http://127.0.0.1:8080/stream_detections');
+          this.sse.onmessage=(ev)=>{ if(!ev.data) return; try{ this.handleDetections(JSON.parse(ev.data)); }catch{} };
+          this.sse.onerror=()=>{};
+        }catch{}
       },
 
-      
+      // score -> hex: 0(red) -> 0.5(yellow) -> 1(green)
+      scoreToHex(s){
+        const clamped=Math.max(0,Math.min(1,s ?? 0.5));
+        const h = clamped * 120; // 0..120
+        const c=new THREE.Color().setHSL(h/360, 0.9, 0.55);
+        return `#${c.getHexString()}`;
+      },
+
       handleDetections(msg){
         if(!this.screen || !this.rig) return;
 
-        // Source image size from server (e.g., 640x640)
         const imgW = msg.width ?? msg.image_width ?? this.mjpeg?._w ?? 1;
         const imgH = msg.height ?? msg.image_height ?? this.mjpeg?._h ?? 1;
-        const boxes = msg.detections ?? msg.boxes ?? msg.objects ?? [];
 
-        // Clear previous lines
-        while (this.detLines.children.length) {
-          const c = this.detLines.children.pop();
-          c.geometry?.dispose?.();
-          c.material?.dispose?.();
-        }
+        const boxes = (msg.detections ?? msg.boxes ?? msg.objects ?? [])
+          .filter(d => (d.class ?? d.label ?? 'FACE') === 'FACE'); // keep it simple per your note
 
-        for (const det of boxes) {
+        // Clear previous frame primitives
+        while (this.detLines.children.length) { const c=this.detLines.children.pop(); c.geometry?.dispose?.(); }
+        while (this.detDots.children.length)  { const c=this.detDots.children.pop();  c.geometry?.dispose?.(); c.material?.dispose?.(); }
+
+        const ui = [];
+
+        for(const det of boxes){
           const bb = det.bbox ?? det;
-
-          // Parse bbox (server is xyxy in pixel coords: [left, top, right, bottom])
-          let [u, v] = bboxToCenterUV(bb, imgW, imgH);
-          // IMPORTANT: do NOT compensate aspect here — the texture fills the plane.
-          // [u,v] are already in the same 0..1 space as the plane’s UVs.
-
-          // UV -> world on the feed plane
+          const [u, v] = bboxToCenterUV(bb, imgW, imgH);
           const hit = uvToWorldOnScreen(this.screen, this.feed.w, this.feed.h, u, v);
 
-          // Green line from virtual camera origin
-          const lineGeo = new THREE.BufferGeometry().setFromPoints([
-            this.rig.origin.clone(),
-            hit
-          ]);
-          const lineMat = new THREE.LineBasicMaterial({ color: 0x00ff66, depthTest: true, depthWrite: false });
-          this.detLines.add(new THREE.Line(lineGeo, lineMat));
+          // Stable line
+          const lineGeo=new THREE.BufferGeometry().setFromPoints([ this.rig.origin.clone(), hit ]);
+          this.detLines.add(new THREE.Line(lineGeo, this.detMat));
+
+          // Score-colored dot
+          const dotGeo=new THREE.SphereGeometry(0.7, 12, 12);
+          const dotMat=new THREE.MeshBasicMaterial({ color: this.scoreToHex(det.score ?? 0.5) });
+          const dot=new THREE.Mesh(dotGeo, dotMat); dot.position.copy(hit); this.detDots.add(dot);
+
+          // UI item
+          let wPx=0,hPx=0;
+          if (Array.isArray(bb) && bb.length===4){ wPx=Math.abs(bb[2]-bb[0]); hPx=Math.abs(bb[3]-bb[1]); }
+          else if ('right'in bb && 'left'in bb && 'bottom'in bb && 'top'in bb){ wPx=Math.abs(bb.right-bb.left); hPx=Math.abs(bb.bottom-bb.top); }
+          else if ('w'in bb || 'width'in bb){ wPx=Math.abs(bb.w ?? bb.width ?? 0); hPx=Math.abs(bb.h ?? bb.height ?? 0); }
+
+          const score = det.score ?? 0;
+          ui.push({
+            key: `${u.toFixed(3)}:${v.toFixed(3)}:${score.toFixed(2)}`,
+            label: det.class ?? det.label ?? 'FACE',
+            score,
+            u, v, w:wPx, h:hPx,
+            hex: this.scoreToHex(score)
+          });
         }
+
+        this.uiDetections = ui;
       },
 
       async acquireLocation(){
         const params=new URLSearchParams(location.search);
-        if(params.get('lat') && params.get('lon')){
-          this.geo.ok=true; this.geo.lat=parseFloat(params.get('lat')); this.geo.lon=parseFloat(params.get('lon')); return;
-        }
+        if(params.get('lat') && params.get('lon')){ this.geo.ok=true; this.geo.lat=parseFloat(params.get('lat')); this.geo.lon=parseFloat(params.get('lon')); return; }
         const p=new Promise(resolve=>{
           if(!('geolocation' in navigator)) return resolve(false);
           navigator.geolocation.getCurrentPosition(
             pos=>{ this.geo.ok=true; this.geo.lat=pos.coords.latitude; this.geo.lon=pos.coords.longitude; resolve(true); },
             ()=>resolve(false), {enableHighAccuracy:true,timeout:5000,maximumAge:30000}
           );
-        });
-        await p;
+        }); await p;
       },
 
       async loadMapPlane(){
         try{
           const patch=await buildTilePatch({lat:this.geo.lat,lon:this.geo.lon},this.map.zoom);
-          const tex=new THREE.CanvasTexture(patch);
-          tex.colorSpace=THREE.SRGBColorSpace;
-          tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;
-          tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
-
+          const tex=new THREE.CanvasTexture(patch); tex.colorSpace=THREE.SRGBColorSpace; tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
           const planeSize=1000, aspect=patch.height/patch.width;
-          const ground=new THREE.Mesh(
-            new THREE.PlaneGeometry(planeSize,planeSize*aspect),
-            new THREE.MeshStandardMaterial({map:tex})
-          );
+          const ground=new THREE.Mesh(new THREE.PlaneGeometry(planeSize,planeSize*aspect), new THREE.MeshStandardMaterial({map:tex}));
           ground.rotation.x=-Math.PI/2;
-
-          if(this.map.mesh){
-            this.three.scene.remove(this.map.mesh);
-            this.map.mesh.geometry.dispose();
-            this.map.mesh.material.map.dispose();
-            this.map.mesh.material.dispose();
-          }
-          this.three.scene.add(ground);
-          this.map.mesh=ground; this.map.ready=true;
+          if(this.map.mesh){ this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose(); }
+          this.three.scene.add(ground); this.map.mesh=ground; this.map.ready=true;
         }catch{ this.map.ready=false; }
       },
 
-      toggleFrustum(){
-        this.frustumVisible=!this.frustumVisible;
-        if(this.rig?.group) this.rig.group.visible=this.frustumVisible;
-      },
+      toggleFrustum(){ this.frustumVisible=!this.frustumVisible; if(this.rig?.group) this.rig.group.visible=this.frustumVisible; },
     });
-
-    // Ensure Alpine picks up after window.hud exists
   </script>
 
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
