@@ -75,37 +75,85 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
+    // ----- Colors -----
+    const CAMERA_GREEN = 0x22c55e;  // same as virtual camera ray
+    const YELLOW       = 0xfacc15;  // yellow caret + "N"
+    const BLUE_GLYPH   = 0x89b4fa;  // light blue (reuse from previous glyph)
+
+    const hexToCss = (hex) => `#${hex.toString(16).padStart(6,'0')}`;
+
     // ----- 3D dial helpers -----
-    function makeCircle(radius, segments=256, color=0x475569, width=2){
+    function makeCircle(radius, segments=256, color=CAMERA_GREEN, width=2){
       const pts=[]; for(let i=0;i<=segments;i++){ const t=(i/segments)*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(t)*radius,0,Math.sin(t)*radius)); }
       const geo=new THREE.BufferGeometry().setFromPoints(pts);
       return new THREE.Line(geo, new THREE.LineBasicMaterial({ color, linewidth: width, depthTest:true, depthWrite:false }));
     }
-    function makeTicks(radius, stepDeg=5){
-      const positions=[]; for(let deg=0;deg<360;deg+=stepDeg){ const is30=deg%30===0, is10=deg%10===0, len=is30?1.8:is10?1.2:0.6;
+    function makeTicks(radius, stepDeg=5, color=CAMERA_GREEN){
+      const positions=[];
+      for(let deg=0;deg<360;deg+=stepDeg){
+        const is30=deg%30===0, is10=deg%10===0, len=is30?1.8:is10?1.2:0.6;
         const a=THREE.MathUtils.degToRad(deg), cx=Math.cos(a), sz=Math.sin(a), r1=radius-len, r2=radius;
-        positions.push(r1*cx,0,r1*sz, r2*cx,0,r2*sz); }
-      const geo=new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color:0x94a3b8, depthTest:true, depthWrite:false }));
+        positions.push(r1*cx,0,r1*sz, r2*cx,0,r2*sz);
+      }
+      const geo=new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, depthTest:true, depthWrite:false }));
     }
-    function makeTextPlane(text, scale=3, color='#e2e8f0', bold=false){
+    function makeTextPlane(text, scale=3, color=CAMERA_GREEN, bold=false){
       const cw=256, ch=128, c=document.createElement('canvas'); c.width=cw; c.height=ch; const ctx=c.getContext('2d');
-      ctx.clearRect(0,0,cw,ch); ctx.fillStyle=color; ctx.font=`${bold?'700':'600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
+      ctx.clearRect(0,0,cw,ch);
+      ctx.fillStyle = typeof color === 'number' ? hexToCss(color) : color;
+      ctx.font=`${bold?'700':'600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
       ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text, cw/2, ch/2);
       const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.transparent=true;
       const aspect=cw/ch, height=scale, width=height*aspect;
       const m=new THREE.Mesh(new THREE.PlaneGeometry(width,height), new THREE.MeshBasicMaterial({ map:tex, transparent:true, depthTest:true, depthWrite:false }));
-      m.rotation.x=-Math.PI/2; return m;
+      m.rotation.x=-Math.PI/2; // lay flat
+      return m;
     }
     function makeAzimuthDial({scene, center, radius=22, y=2}){
       const g=new THREE.Group(); g.position.set(center.x,y,center.z);
-      g.add(makeCircle(radius,256,0x475569,2)); g.add(makeCircle(radius-2.4,256,0x334155,1)); g.add(makeTicks(radius,5));
-      for(let deg=0; deg<360; deg+=30){ const a=THREE.MathUtils.degToRad(deg), rr=radius-3.6, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
-        const lbl=makeTextPlane(String(deg), 2.4, '#e2e8f0', false); lbl.position.set(x,0.01,z); g.add(lbl); }
-      for(const [t,deg] of [['N',0],['E',90],['S',180],['W',270]]){ const a=THREE.MathUtils.degToRad(deg), rr=radius-6.0, x=Math.cos(a)*rr, z=Math.sin(a)*rr;
-        const lbl=makeTextPlane(t,3.2,'#f8fafc',true); lbl.position.set(x,0.02,z); g.add(lbl); }
-      const caret=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,radius+1.2),new THREE.Vector3(0,0,radius-1.5)]);
-      g.add(new THREE.Line(caret,new THREE.LineBasicMaterial({ color:0xfacc15, linewidth:2 }))); scene.add(g); return g;
+
+      const dial = new THREE.Group();
+
+      // Rings / ticks — camera green
+      dial.add(makeCircle(radius,256,CAMERA_GREEN,2));
+      dial.add(makeCircle(radius-2.4,256,CAMERA_GREEN,1));
+      dial.add(makeTicks(radius,5,CAMERA_GREEN));
+
+      // Degree numbers — 2x larger
+      for(let deg=0; deg<360; deg+=30){
+        const a=THREE.MathUtils.degToRad(deg), rr=radius-3.6;
+        const x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+        const lbl=makeTextPlane(String(deg), 4.8, CAMERA_GREEN, false); // was 2.4
+        lbl.position.set(x,0.01,z); dial.add(lbl);
+      }
+
+      // Cardinals — 3x larger; rotate N & S 90° CCW so they’re upright
+      const cards=[['N',0,YELLOW],['E',90,CAMERA_GREEN],['S',180,CAMERA_GREEN],['W',270,CAMERA_GREEN]];
+      for(const [t,deg,col] of cards){
+        const a=THREE.MathUtils.degToRad(deg), rr=radius-6.0;
+        const x=Math.cos(a)*rr, z=Math.sin(a)*rr;
+        const lbl=makeTextPlane(t,9.6,col,true); // was 3.2
+        lbl.position.set(x,0.02,z);
+        if (t === 'N' || t === 'S') lbl.rotation.z = Math.PI/2; // 90° counter-clockwise
+        dial.add(lbl);
+      }
+
+      // Yellow North caret (points along +Z)
+      const caretGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0,0,radius+1.2),
+        new THREE.Vector3(0,0,radius-1.5)
+      ]);
+      const caret = new THREE.Line(caretGeo,new THREE.LineBasicMaterial({ color:YELLOW, linewidth:2 }));
+
+      // Keep your previous transforms: global flip then dial +90° clockwise
+      g.rotation.y = Math.PI;
+      dial.rotation.y = -Math.PI/2;
+
+      g.add(dial, caret);
+      scene.add(g);
+      return g;
     }
 
     // Map UV -> world on live-feed plane
@@ -219,15 +267,26 @@
       const fTR=farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
       const fBL=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
       const fBR=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
+
       const mat=new THREE.LineBasicMaterial({ color, depthTest:true, depthWrite:false });
       const nearRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL,cTR,cBR,cBL,cTL]), mat);
       const farRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL,fTR,fBR,fBL,fTL]), mat);
       const edges=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]), mat);
-      const camGlyph=new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-        origin.clone().add(right.clone().multiplyScalar(0.6)), origin, origin.clone().add(right.clone().multiplyScalar(-0.6)), origin.clone().add(up.clone().multiplyScalar(0.7))
-      ]), new THREE.LineBasicMaterial({ color:0x89b4fa, depthTest:true }));
+
+      // Replace glyph with a single blue vertical line from camera origin down to ground
+      const cameraDownGeo = new THREE.BufferGeometry().setFromPoints([
+        origin.clone(),
+        new THREE.Vector3(origin.x, 0, origin.z)
+      ]);
+      const cameraDown = new THREE.Line(cameraDownGeo, new THREE.LineBasicMaterial({ color: BLUE_GLYPH, linewidth: 2 }));
+
       const normalLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([center,origin]), new THREE.LineDashedMaterial({ color, dashSize:2, gapSize:1 })); normalLine.computeLineDistances();
-      const group=new THREE.Group(); group.add(nearRect,farRect,edges,camGlyph,normalLine); scene.add(group); return { group, origin };
+
+      const group=new THREE.Group();
+       
+      group.add(nearRect,edges,cameraDown,normalLine); // farRect,
+      scene.add(group);
+      return { group, origin };
     }
 
     // ---------- Alpine app ----------
@@ -274,7 +333,7 @@
 
         this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
         this.detDots  = new THREE.Group(); this.three.scene.add(this.detDots);
-        this.detMat   = new THREE.LineBasicMaterial({ color: 0x22c55e, depthTest:true, depthWrite:false }); // emerald-500
+        this.detMat   = new THREE.LineBasicMaterial({ color: CAMERA_GREEN, depthTest:true, depthWrite:false });
 
         try{
           this.sse=new EventSource('http://127.0.0.1:8080/stream_detections');
@@ -298,7 +357,7 @@
         const imgH = msg.height ?? msg.image_height ?? this.mjpeg?._h ?? 1;
 
         const boxes = (msg.detections ?? msg.boxes ?? msg.objects ?? [])
-          .filter(d => (d.class ?? d.label ?? 'FACE') === 'FACE'); // keep it simple per your note
+          .filter(d => (d.class ?? d.label ?? 'FACE') === 'FACE');
 
         // Clear previous frame primitives
         while (this.detLines.children.length) { const c=this.detLines.children.pop(); c.geometry?.dispose?.(); }
