@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Recon HUD — Map + MJPEG Frustum</title>
 
+  <!-- Note: CDN warning is informational. For prod, switch to Tailwind CLI/PostCSS. -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
@@ -17,9 +18,7 @@
 
   <style>
     html, body { height: 100%; margin: 0; background: #0b0f14; overflow: hidden; }
-    /* Full-viewport WebGL canvas */
     #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-    /* Keep offscreen tile canvas hidden; style doesn't matter but keep consistent */
     #tileCanvas { display: none; }
     .attribution { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: #aab3c2; opacity: 0.85; z-index: 40; }
   </style>
@@ -36,9 +35,9 @@
         <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'" x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
       </div>
       <div class="mt-2 flex gap-2">
-  <!-- Controls hidden per request; keep toggle wired for future -->
-  <button @click="toggleFrustum()" class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
-</div>
+        <!-- Controls hidden per request; keep wiring for later if needed -->
+        <button @click="toggleFrustum()" class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
+      </div>
     </div>
   </div>
 
@@ -48,8 +47,94 @@
   <canvas id="tileCanvas" width="768" height="768"></canvas>
 
   <script type="module">
-    import * as THREE from "three";
-    import { OrbitControls } from "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+    import * as THREE from 'three';
+    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+    // ----- 3D Azimuth dial anchored at virtual camera ground point -----
+    function makeCircle(radius, segments=256, color=0x475569, width=2){
+      const pts = [];
+      for(let i=0;i<=segments;i++){
+        const t = (i/segments) * Math.PI*2;
+        pts.push(new THREE.Vector3(Math.cos(t)*radius, 0, Math.sin(t)*radius));
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({ color, linewidth: width, depthTest:true, depthWrite:false });
+      const line = new THREE.Line(geo, mat);
+      return line;
+    }
+    function makeTicks(radius, stepDeg=5){
+      const positions = [];
+      for(let deg=0; deg<360; deg+=stepDeg){
+        const is30 = deg % 30 === 0;
+        const is10 = deg % 10 === 0;
+        const len = is30 ? 1.8 : is10 ? 1.2 : 0.6; // world units
+        const a = THREE.MathUtils.degToRad(deg);
+        const cx = Math.cos(a), sz = Math.sin(a);
+        const r1 = radius - len;
+        const r2 = radius;
+        positions.push(r1*cx, 0, r1*sz,  r2*cx, 0, r2*sz);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0x94a3b8, depthTest:true, depthWrite:false });
+      return new THREE.LineSegments(geo, mat);
+    }
+    function makeTextPlane(text, scale=3, color='#e2e8f0', bold=false){
+      const cw=256, ch=128;
+      const c = document.createElement('canvas'); c.width=cw; c.height=ch;
+      const ctx=c.getContext('2d'); ctx.clearRect(0,0,cw,ch);
+      ctx.fillStyle='rgba(0,0,0,0)'; ctx.fillRect(0,0,cw,ch);
+      ctx.fillStyle=color;
+      ctx.font = `${bold? '700': '600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(text, cw/2, ch/2);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.needsUpdate=true; tex.transparent=true;
+      const aspect = cw/ch; const height = scale; const width = height * aspect;
+      const geo = new THREE.PlaneGeometry(width, height);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent:true, depthTest:true, depthWrite:false });
+      const m = new THREE.Mesh(geo, mat);
+      // lay flat (horizontal) like the dial
+      m.rotation.x = -Math.PI/2;
+      return m;
+    }
+    function makeAzimuthDial(opts){
+      const { scene, center, radius=22, y=2 } = opts;
+      const g = new THREE.Group();
+      g.position.set(center.x, y, center.z);
+      // Build rings
+      g.add(makeCircle(radius, 256, 0x475569, 2));
+      g.add(makeCircle(radius-2.4, 256, 0x334155, 1));
+      // Ticks
+      g.add(makeTicks(radius, 5));
+      // Numbers every 30°
+      for(let deg=0; deg<360; deg+=30){
+        const a = THREE.MathUtils.degToRad(deg);
+        const rr = radius - 3.6;
+        const x = Math.cos(a)*rr;
+        const z = Math.sin(a)*rr;
+        const lbl = makeTextPlane(String(deg), 2.4, '#e2e8f0', false);
+        lbl.position.set(x, 0.01, z); // tiny lift to avoid z-fight
+        g.add(lbl);
+      }
+      // Cardinals
+      const cards = [['N',0],['E',90],['S',180],['W',270]];
+      for(const [t,deg] of cards){
+        const a = THREE.MathUtils.degToRad(deg);
+        const rr = radius - 6.0;
+        const x = Math.cos(a)*rr;
+        const z = Math.sin(a)*rr;
+        const lbl = makeTextPlane(t, 3.2, '#f8fafc', true);
+        lbl.position.set(x, 0.02, z);
+        g.add(lbl);
+      }
+      // North caret line
+      const caret = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0,0, radius+1.2),
+        new THREE.Vector3(0,0, radius-1.5)
+      ]);
+      g.add(new THREE.Line(caret, new THREE.LineBasicMaterial({ color:0xfacc15, linewidth:2 })));
+      scene.add(g);
+      return g;
+    }
 
     // ---------- Slippy map ----------
     const d2r = d => d * Math.PI / 180;
@@ -76,7 +161,7 @@
         }));
       }
       await Promise.all(loads);
-      if (!ok) throw new Error("No tiles loaded");
+      if (!ok) throw new Error('No tiles loaded');
       return canvas;
     }
 
@@ -161,18 +246,16 @@
       const camera=new THREE.PerspectiveCamera(60,2,0.1,2000);
       camera.position.set(0,160,260);
       const controls=new OrbitControls(camera,renderer.domElement);
-      // Stabilize desktop zoom/pan. DevTools often changes rAF timing and input deltas,
-      // which is why things felt smoother when it was open. Normalize against DPR and
-      // use damping + screen-space panning for consistent feel.
+      // Normalize desktop zoom/pan
       const DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
       controls.target.set(0,0,0);
       controls.enableDamping = true;
       controls.dampingFactor = 0.15;
       controls.screenSpacePanning = true;
       controls.zoomToCursor = true;
-      controls.zoomSpeed = 0.75 / DPR;     // reduce scroll zoom sensitivity on hi‑DPI
-      controls.panSpeed  = 0.75 / DPR;     // reduce mouse pan sensitivity on hi‑DPI
-      controls.minDistance = 20;           // sensible dolly clamps
+      controls.zoomSpeed = 0.75 / DPR;
+      controls.panSpeed  = 0.75 / DPR;
+      controls.minDistance = 20;
       controls.maxDistance = 1200;
       controls.update();
       scene.add(new THREE.HemisphereLight(0xbcd1ff,0x232b35,0.6));
@@ -180,10 +263,10 @@
       function resize(){
         const w=window.innerWidth, h=window.innerHeight;
         camera.aspect=w/h; camera.updateProjectionMatrix();
-        // Only update drawing buffer size; CSS is locked to 100vw/100vh
         renderer.setSize(w,h,false);
       }
-      addEventListener('resize',resize); resize();
+      addEventListener('resize', resize);
+      resize();
       const clock=new THREE.Clock();
       (function tick(){ hooks?.update?.(clock.getDelta()); controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick); })();
       return {scene,camera};
@@ -272,21 +355,23 @@
 
         // Live-feed plane
         const feedW=80, feedH=60;
-        const lift = feedH * 0.5;            // raise by half its height
+        const lift = feedH * 0.5;
         const screenGeom=new THREE.PlaneGeometry(feedW,feedH);
-        const screenMat=new THREE.MeshBasicMaterial({
-          side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false
-        });
+        const screenMat=new THREE.MeshBasicMaterial({ side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false });
         this.mjpeg.attach(screenMat);
 
         const screen=new THREE.Mesh(screenGeom,screenMat);
-        screen.position.set(0, 5 + lift, 0); // lift above ground so it doesn't clip
+        screen.position.set(0, 5 + lift, 0);
         screen.rotation.set(-0.15, 0.45, 0.0);
         this.three.scene.add(screen);
 
-        // Frustum gizmo fitted to the raised screen (origin follows automatically)
+        // Frustum gizmo fitted to the raised screen
         this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:60, color:0xf6c560 });
         this.rig.group.visible = this.frustumVisible;
+
+        // Azimuth dial anchored at virtual camera ground point, a few units up
+        const groundPoint = new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z);
+        this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: groundPoint, radius: 90, y: 2 });
       },
 
       async acquireLocation(){
@@ -335,6 +420,8 @@
         if(this.rig?.group) this.rig.group.visible=this.frustumVisible;
       },
     });
+
+    // Ensure Alpine picks up after window.hud exists
   </script>
 
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
