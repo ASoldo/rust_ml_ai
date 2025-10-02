@@ -353,7 +353,7 @@
       const normalLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([center,origin]), new THREE.LineDashedMaterial({ color, dashSize:2, gapSize:1 })); normalLine.computeLineDistances();
 
       const group=new THREE.Group();
-      group.add(nearRect, edges, farRect, cameraDown, normalLine);
+      group.add(nearRect, edges, cameraDown, normalLine); //farRect, 
       scene.add(group);
       return { group, origin };
     }
@@ -395,7 +395,7 @@
         this.three.scene.add(screen);
         this.screen=screen;
 
-        this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:60, color:0xf6c560 });
+        this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:35, color:0xf6c560 });
         this.rig.group.visible = this.frustumVisible;
 
         this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x,0,this.rig.origin.z), radius: 90, y: 2 });
