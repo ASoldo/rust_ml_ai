@@ -1,3 +1,5 @@
+<img width="1251" height="656" alt="image" src="https://github.com/user-attachments/assets/27ad2543-2dc0-475d-a929-bc074611ffd2" />
+
 # CUDA C++ Dojo
 
 This repository now exposes a small Rust workspace with three crates:
