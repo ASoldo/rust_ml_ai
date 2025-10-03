@@ -8,7 +8,7 @@ pub const HUD_INDEX_HTML: &str = r#"
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
-  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  { "imports": { "three": "https://unpkg.com/three@0.180.0/build/three.module.js" } }
   </script>
 
   <style>
