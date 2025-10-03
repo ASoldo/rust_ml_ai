@@ -74,7 +74,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
   <script type="module">
     import * as THREE from 'three';
-    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.180.0/examples/jsm/controls/OrbitControls.js';
 
     // ----- Colors -----
     const CAMERA_GREEN = 0x4ade80;  // lime green indicator
