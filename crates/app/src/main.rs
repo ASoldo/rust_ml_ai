@@ -46,6 +46,12 @@ use serde_json::to_string;
 const ELEMENT_COUNT: usize = 16;
 
 #[cfg(feature = "with-tch")]
+mod hud_html;
+
+#[cfg(feature = "with-tch")]
+use hud_html::HUD_INDEX_HTML;
+
+#[cfg(feature = "with-tch")]
 type SharedFrame = Arc<Mutex<Option<FramePacket>>>;
 
 #[cfg(feature = "with-tch")]
@@ -568,9 +574,7 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
 async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(
-            "<html><body><h3>Vision Preview</h3><img src=\"/stream.mjpg\" width=\"640\" height=\"480\" /></body></html>",
-        )
+        .body(HUD_INDEX_HTML)
 }
 
 #[cfg(feature = "with-tch")]
