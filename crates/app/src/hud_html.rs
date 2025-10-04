@@ -675,7 +675,6 @@ pub const HUD_INDEX_HTML: &str = r#"
           }
           ctx.putImageData(diffImage, 0, 0);
         } else {
-          ctx.drawImage(sourceCanvas, 0, 0, w, h);
           const overlayImage = this.ensurePreviewBuffer('overlay', w, h);
           const ov = overlayImage.data;
           for (let i = 0; i < length; i += 4) {
@@ -685,7 +684,7 @@ pub const HUD_INDEX_HTML: &str = r#"
             let mag = (Math.abs(dr) + Math.abs(dg) + Math.abs(db)) / 3;
             if (mag < threshold) mag = 0;
             const rr = 255;
-            const gg = Math.min(255, 80 + mag * 1.1);
+            const gg = Math.min(255, 120 + mag * 1.5);
             const bb = 0;
             const alpha = mag === 0 ? 0 : Math.round((mag / 255) * overlayAlpha * 255);
             ov[i] = rr;
