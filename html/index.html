@@ -65,29 +65,50 @@
     <!-- Single Recon Status card WITH Detections inside -->
     <div
       class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700 min-w-[280px]">
-      <div class="mt-2 space-y-3">
-        <div>
-          <div class="text-xs uppercase tracking-wider text-slate-400/90">LivePreview</div>
-          <div class="mt-2 grid grid-cols-4 gap-1">
-            <button @click="setPreviewMode('original')"
-              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
-              :class="previewMode === 'original' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Orig</button>
-            <button @click="setPreviewMode('delta')"
-              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
-              :class="previewMode === 'delta' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">ΔColor</button>
-            <button @click="setPreviewMode('abs')"
-              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
-              :class="previewMode === 'abs' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">AbsDiff</button>
-            <button @click="setPreviewMode('overlay')"
-              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
-              :class="previewMode === 'overlay' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Overlay</button>
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-xs uppercase tracking-wider text-slate-400">HUD Panel</div>
+        <button type="button" @click="togglePanel()"
+          class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-xs font-semibold tracking-wide hover:bg-slate-700 transition"
+          :class="panelCollapsed ? 'text-emerald-300 border-emerald-500/40' : 'text-slate-200'">
+          <span x-show="!panelCollapsed" x-cloak>−</span>
+          <span x-show="panelCollapsed" x-cloak>+</span>
+        </button>
+      </div>
+
+      <div x-show="!panelCollapsed" x-transition x-cloak class="flex flex-col gap-3">
+        <div class="border border-slate-700/60 rounded-lg bg-slate-900/60">
+          <button type="button" @click="toggleSection('preview')"
+            class="w-full flex items-center justify-between text-xs uppercase tracking-wider text-slate-300 px-2 py-1.5">
+            <span>LivePreview</span>
+            <span x-text="sections.preview ? '−' : '+'"></span>
+          </button>
+          <div x-show="sections.preview" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 space-y-2">
+            <div class="grid grid-cols-4 gap-1">
+              <button @click="setPreviewMode('original')"
+                class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+                :class="previewMode === 'original' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Orig</button>
+              <button @click="setPreviewMode('delta')"
+                class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+                :class="previewMode === 'delta' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">ΔColor</button>
+              <button @click="setPreviewMode('abs')"
+                class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+                :class="previewMode === 'abs' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">AbsDiff</button>
+              <button @click="setPreviewMode('overlay')"
+                class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+                :class="previewMode === 'overlay' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Overlay</button>
+            </div>
+            <canvas x-ref="previewCanvas" class="w-full max-w-xs rounded border border-slate-700 bg-black"
+              style="aspect-ratio: 4 / 3; image-rendering: pixelated;"></canvas>
           </div>
-          <canvas x-ref="previewCanvas" class="mt-2 w-full max-w-xs rounded border border-slate-700 bg-black"
-            style="aspect-ratio: 4 / 3; image-rendering: pixelated;"></canvas>
         </div>
-        <div>
-          <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
-          <div class="mt-1 text-sm space-y-0.5">
+
+        <div class="border border-slate-700/60 rounded-lg bg-slate-900/60">
+          <button type="button" @click="toggleSection('status')"
+            class="w-full flex items-center justify-between text-xs uppercase tracking-wider text-slate-300 px-2 py-1.5">
+            <span>Recon Status</span>
+            <span x-text="sections.status ? '−' : '+'"></span>
+          </button>
+          <div x-show="sections.status" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-0.5">
             <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
                 x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
             <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
@@ -96,44 +117,41 @@
                 x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
           </div>
         </div>
-      </div>
 
-      <!-- Optional controls -->
-      <div class="mt-2 flex gap-2">
-        <button @click="toggleFrustum()"
-          class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle
-          Frustum</button>
-      </div>
-
-      <!-- Detections section (inside the same card) -->
-      <div class="mt-3" x-show="uiDetections.length > 0" x-transition>
-        <div class="text-xs uppercase tracking-wider text-slate-400">Detections</div>
-        <div class="mt-1 text-sm">
-          <div class="text-slate-300 mb-1">
-            Count: <span class="text-slate-100 font-semibold" x-text="uiDetections.length"></span>
-          </div>
-          <!-- Scrollable list -->
-          <div class="max-h-48 overflow-y-auto pr-1">
-            <template x-for="d in uiDetections" :key="d.key">
-              <div
-                class="py-1 grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 items-center border-b border-slate-700/40 last:border-0">
-                <div class="w-3 h-3 rounded-full ring-1 ring-slate-700/60" :style="`background:${d.hex};`"></div>
-                <div>
-                  <div class="flex gap-2 items-baseline">
-                    <span class="font-medium" x-text="d.label"></span>
-                    <span class="text-xs text-slate-400">score <span x-text="d.score.toFixed(2)"></span></span>
-                  </div>
-                  <div class="text-xs text-slate-400">
-                    center <span x-text="d.u.toFixed(2)"></span>, <span x-text="d.v.toFixed(2)"></span>
-                    · box <span x-text="`${d.w|0}×${d.h|0}`"></span>
+        <div class="border border-slate-700/60 rounded-lg bg-slate-900/60">
+          <button type="button" @click="toggleSection('detections')"
+            class="w-full flex items-center justify-between text-xs uppercase tracking-wider text-slate-300 px-2 py-1.5">
+            <span>Detections</span>
+            <span x-text="sections.detections ? '−' : '+'"></span>
+          </button>
+          <div x-show="sections.detections" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-1">
+            <div class="text-slate-300">
+              Count: <span class="text-slate-100 font-semibold" x-text="uiDetections.length"></span>
+            </div>
+            <div class="max-h-48 overflow-y-auto pr-1 border border-slate-700/40 rounded-lg">
+              <template x-if="uiDetections.length === 0">
+                <div class="px-2 py-3 text-xs text-slate-500">No detections yet.</div>
+              </template>
+              <template x-for="d in uiDetections" :key="d.key">
+                <div
+                  class="px-2 py-1 grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 items-center border-b border-slate-700/40 last:border-0">
+                  <div class="w-3 h-3 rounded-full ring-1 ring-slate-700/60" :style="`background:${d.hex};`"></div>
+                  <div>
+                    <div class="flex gap-2 items-baseline">
+                      <span class="font-medium" x-text="d.label"></span>
+                      <span class="text-xs text-slate-400">score <span x-text="d.score.toFixed(2)"></span></span>
+                    </div>
+                    <div class="text-xs text-slate-400">
+                      center <span x-text="d.u.toFixed(2)"></span>, <span x-text="d.v.toFixed(2)"></span>
+                      · box <span x-text="`${d.w|0}×${d.h|0}`"></span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </template>
+              </template>
+            </div>
           </div>
         </div>
       </div>
-      <!-- /Detections -->
     </div>
   </div>
 
@@ -516,6 +534,8 @@
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
       loadingTimer: null,
+      panelCollapsed: false,
+      sections: {preview: true, status: true, detections: true},
       previewMode: 'original',
       preview: {canvas: null, ctx: null, prev: null, raf: null, threshold: 20, overlayAlpha: 0.6, buffers: {}, lastRender: 0},
       three: null, rig: null, mjpeg: null, frustumVisible: true,
@@ -553,6 +573,40 @@
         }, delay);
       },
 
+      togglePanel() {
+        this.panelCollapsed = !this.panelCollapsed;
+        if (this.panelCollapsed) {
+          this.stopPreviewLoop();
+          if (this.preview.ctx && this.preview.canvas) {
+            this.preview.ctx.clearRect(0, 0, this.preview.canvas.width || 0, this.preview.canvas.height || 0);
+            this.preview.ctx.fillStyle = '#000';
+            this.preview.ctx.fillRect(0, 0, this.preview.canvas.width || 0, this.preview.canvas.height || 0);
+          }
+        } else if (this.sections.preview) {
+          this.preview.prev = null;
+          this.startPreviewLoop();
+        }
+      },
+
+      toggleSection(section) {
+        if (!(section in this.sections)) return;
+        const currentlyOpen = this.sections[section];
+        this.sections[section] = !currentlyOpen;
+        if (section === 'preview') {
+          if (this.sections.preview && !this.panelCollapsed) {
+            this.preview.prev = null;
+            this.startPreviewLoop();
+          } else {
+            this.stopPreviewLoop();
+            if (this.preview.ctx && this.preview.canvas) {
+              this.preview.ctx.clearRect(0, 0, this.preview.canvas.width || 0, this.preview.canvas.height || 0);
+              this.preview.ctx.fillStyle = '#000';
+              this.preview.ctx.fillRect(0, 0, this.preview.canvas.width || 0, this.preview.canvas.height || 0);
+            }
+          }
+        }
+      },
+
       setPreviewMode(mode) {
         if (!mode) return;
         if (mode === this.previewMode) return;
@@ -569,13 +623,20 @@
           this.preview.prev = null;
           this.preview.buffers = {};
           this.preview.lastRender = 0;
-          this.startPreviewLoop();
+          if (!this.panelCollapsed && this.sections.preview) {
+            this.startPreviewLoop();
+          }
         });
       },
 
       startPreviewLoop() {
-        if (this.preview.raf) cancelAnimationFrame(this.preview.raf);
+        if (this.panelCollapsed || !this.sections.preview) return;
+        if (this.preview.raf) return;
         const tick = () => {
+          if (this.panelCollapsed || !this.sections.preview) {
+            this.preview.raf = null;
+            return;
+          }
           this.renderPreview();
           this.preview.raf = requestAnimationFrame(tick);
         };
@@ -585,6 +646,7 @@
       stopPreviewLoop() {
         if (this.preview.raf) cancelAnimationFrame(this.preview.raf);
         this.preview.raf = null;
+        this.preview.lastRender = 0;
       },
 
       ensurePreviewBuffer(name, w, h) {
@@ -601,6 +663,7 @@
         const canvas = this.preview.canvas;
         const ctx = this.preview.ctx;
         const mjpeg = this.mjpeg;
+        if (this.panelCollapsed || !this.sections.preview) return;
         if (!canvas || !ctx || !mjpeg || !mjpeg.canvas || !mjpeg.ctx) return;
 
         const now = performance.now();
