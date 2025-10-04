@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -7,14 +8,39 @@
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
-  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+  { "imports": { "three": "https://unpkg.com/three@0.180.0/build/three.module.js" } }
   </script>
 
   <style>
-    html, body { height: 100%; margin: 0; background: #0b0f14; overflow: hidden; }
-    #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-    #tileCanvas { display: none; }
-    .attribution { position: absolute; bottom: 8px; left: 10px; font-size: 11px; color: #aab3c2; opacity: 0.85; z-index: 40; }
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #0b0f14;
+      overflow: hidden;
+    }
+
+    #scene {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    #tileCanvas {
+      display: none;
+    }
+
+    .attribution {
+      position: absolute;
+      bottom: 8px;
+      left: 10px;
+      font-size: 11px;
+      color: #aab3c2;
+      opacity: 0.85;
+      z-index: 40;
+    }
   </style>
 </head>
 
@@ -22,17 +48,23 @@
   <!-- HUD (pinned on top) -->
   <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3 z-50">
     <!-- Single Recon Status card WITH Detections inside -->
-    <div class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700 min-w-[280px]">
+    <div
+      class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700 min-w-[280px]">
       <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
       <div class="mt-1 text-sm space-y-0.5">
-        <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'" x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
-        <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'" x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
-        <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'" x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
+        <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
+            x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
+        <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
+            x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
+        <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'"
+            x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
       </div>
 
       <!-- Optional controls -->
       <div class="mt-2 flex gap-2">
-        <button @click="toggleFrustum()" class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle Frustum</button>
+        <button @click="toggleFrustum()"
+          class="hidden px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs">Toggle
+          Frustum</button>
       </div>
 
       <!-- Detections section (inside the same card) -->
@@ -45,7 +77,8 @@
           <!-- Scrollable list -->
           <div class="max-h-48 overflow-y-auto pr-1">
             <template x-for="d in uiDetections" :key="d.key">
-              <div class="py-1 grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 items-center border-b border-slate-700/40 last:border-0">
+              <div
+                class="py-1 grid grid-cols-[auto,1fr] gap-x-2 gap-y-0.5 items-center border-b border-slate-700/40 last:border-0">
                 <div class="w-3 h-3 rounded-full ring-1 ring-slate-700/60" :style="`background:${d.hex};`"></div>
                 <div>
                   <div class="flex gap-2 items-baseline">
@@ -66,57 +99,58 @@
     </div>
   </div>
 
-  <div class="attribution">Map data © <a class="underline" href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>
+  <div class="attribution">Map data © <a class="underline"
+      href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>
 
   <canvas id="scene"></canvas>
   <canvas id="tileCanvas" width="768" height="768"></canvas>
 
   <script type="module">
     import * as THREE from 'three';
-    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+    import {OrbitControls} from 'https://unpkg.com/three@0.180.0/examples/jsm/controls/OrbitControls.js';
 
     // ----- Colors -----
     const CAMERA_GREEN = 0x4ade80;  // lime green indicator
-    const CAMERA_ORANGE= 0xf6c560;  // frustum / bearing indicator
+    const CAMERA_ORANGE = 0xf6c560;  // frustum / bearing indicator
     const CAMERA_YAW_OFFSET = Math.PI; // ensures yaw=0 aligns with map north
-    const YELLOW       = 0xfacc15;  // yellow caret + "N"
-    const BLUE_GLYPH   = 0x89b4fa;  // light blue (reuse from previous glyph)
+    const YELLOW = 0xfacc15;  // yellow caret + "N"
+    const BLUE_GLYPH = 0x89b4fa;  // light blue (reuse from previous glyph)
 
-    const hexToCss = (hex) => `#${hex.toString(16).padStart(6,'0')}`;
+    const hexToCss = (hex) => `#${hex.toString(16).padStart(6, '0')}`;
 
     // ----- 3D dial helpers -----
-    function makeCircle(radius, segments=256, color=CAMERA_GREEN, width=2){
-      const pts=[]; for(let i=0;i<=segments;i++){ const t=(i/segments)*Math.PI*2; pts.push(new THREE.Vector3(Math.cos(t)*radius,0,Math.sin(t)*radius)); }
-      const geo=new THREE.BufferGeometry().setFromPoints(pts);
-      return new THREE.Line(geo, new THREE.LineBasicMaterial({ color, linewidth: width, depthTest:true, depthWrite:false }));
+    function makeCircle(radius, segments = 256, color = CAMERA_GREEN, width = 2) {
+      const pts = []; for (let i = 0; i <= segments; i++) {const t = (i / segments) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(t) * radius, 0, Math.sin(t) * radius));}
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      return new THREE.Line(geo, new THREE.LineBasicMaterial({color, linewidth: width, depthTest: true, depthWrite: false}));
     }
-    function makeTicks(radius, stepDeg=5, color=CAMERA_GREEN){
-      const positions=[];
-      for(let deg=0;deg<360;deg+=stepDeg){
-        const is30=deg%30===0, is10=deg%10===0, len=is30?1.8:is10?1.2:0.6;
-        const a=THREE.MathUtils.degToRad(deg), cx=Math.cos(a), sz=Math.sin(a), r1=radius-len, r2=radius;
-        positions.push(r1*cx,0,r1*sz, r2*cx,0,r2*sz);
+    function makeTicks(radius, stepDeg = 5, color = CAMERA_GREEN) {
+      const positions = [];
+      for (let deg = 0; deg < 360; deg += stepDeg) {
+        const is30 = deg % 30 === 0, is10 = deg % 10 === 0, len = is30 ? 1.8 : is10 ? 1.2 : 0.6;
+        const a = THREE.MathUtils.degToRad(deg), cx = Math.cos(a), sz = Math.sin(a), r1 = radius - len, r2 = radius;
+        positions.push(r1 * cx, 0, r1 * sz, r2 * cx, 0, r2 * sz);
       }
-      const geo=new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
-      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, depthTest:true, depthWrite:false }));
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({color, depthTest: true, depthWrite: false}));
     }
-    function makeTextPlane(text, scale=3, color=CAMERA_GREEN, bold=false){
-      const cw=256, ch=128, c=document.createElement('canvas'); c.width=cw; c.height=ch; const ctx=c.getContext('2d');
-      ctx.clearRect(0,0,cw,ch);
+    function makeTextPlane(text, scale = 3, color = CAMERA_GREEN, bold = false) {
+      const cw = 256, ch = 128, c = document.createElement('canvas'); c.width = cw; c.height = ch; const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, cw, ch);
       ctx.fillStyle = typeof color === 'number' ? hexToCss(color) : color;
-      ctx.font=`${bold?'700':'600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
-      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(text, cw/2, ch/2);
-      const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.transparent=true;
-      const aspect=cw/ch, height=scale, width=height*aspect;
-      const m=new THREE.Mesh(new THREE.PlaneGeometry(width,height), new THREE.MeshBasicMaterial({ map:tex, transparent:true, depthTest:true, depthWrite:false }));
+      ctx.font = `${bold ? '700' : '600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cw / 2, ch / 2);
+      const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.transparent = true;
+      const aspect = cw / ch, height = scale, width = height * aspect;
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(width, height), new THREE.MeshBasicMaterial({map: tex, transparent: true, depthTest: true, depthWrite: false}));
       return m;
     }
 
     const TMP_CENTER = new THREE.Vector3();
     const TMP_LOCAL = new THREE.Vector3();
 
-    function createRadialLabel({ text, radius, angleRad, scale, color, bold=false, height=0.01 }){
+    function createRadialLabel({text, radius, angleRad, scale, color, bold = false, height = 0.01}) {
       const pivot = new THREE.Object3D();
       pivot.rotation.y = Math.PI / 2 - angleRad;
 
@@ -125,11 +159,11 @@
       mesh.rotation.set(Math.PI / 2, Math.PI, Math.PI);
       pivot.add(mesh);
 
-      return { pivot, mesh };
+      return {pivot, mesh};
     }
 
-    function makeAzimuthDial({scene, center, radius=22, y=2}){
-      const g=new THREE.Group(); g.position.set(center.x,y,center.z);
+    function makeAzimuthDial({scene, center, radius = 22, y = 2}) {
+      const g = new THREE.Group(); g.position.set(center.x, y, center.z);
 
       const dial = new THREE.Group();
 
@@ -138,7 +172,7 @@
 
       const bearingSphere = new THREE.Mesh(
         new THREE.SphereGeometry(2.2, 24, 18),
-        new THREE.MeshBasicMaterial({ color: CAMERA_ORANGE })
+        new THREE.MeshBasicMaterial({color: CAMERA_ORANGE})
       );
       bearingSphere.position.set(0, INDICATOR_HEIGHT, INDICATOR_RADIUS);
       dial.add(bearingSphere);
@@ -146,58 +180,58 @@
       const detectionRoot = new THREE.Group();
       dial.add(detectionRoot);
       const detectionSphereGeo = new THREE.SphereGeometry(1.4, 16, 12);
-      const detectionSphereMat = new THREE.MeshBasicMaterial({ color: CAMERA_GREEN });
-      const detectionLineMat = new THREE.LineBasicMaterial({ color: CAMERA_GREEN, depthTest:true, depthWrite:false });
+      const detectionSphereMat = new THREE.MeshBasicMaterial({color: CAMERA_GREEN});
+      const detectionLineMat = new THREE.LineBasicMaterial({color: CAMERA_GREEN, depthTest: true, depthWrite: false});
       const detectionLines = [];
 
       const originAnchor = new THREE.Object3D();
       dial.add(originAnchor);
 
       const cameraLineGeo = new THREE.BufferGeometry();
-      const cameraLineMat = new THREE.LineBasicMaterial({ color: CAMERA_ORANGE, depthTest:true, depthWrite:false });
+      const cameraLineMat = new THREE.LineBasicMaterial({color: CAMERA_ORANGE, depthTest: true, depthWrite: false});
       const cameraLine = new THREE.Line(cameraLineGeo, cameraLineMat);
       cameraLineGeo.setFromPoints([originAnchor.position, originAnchor.position]);
       dial.add(cameraLine);
 
       // Rings / ticks — camera green
-      dial.add(makeCircle(radius,256,CAMERA_GREEN,2));
-      dial.add(makeCircle(radius-2.4,256,CAMERA_GREEN,1));
-      dial.add(makeTicks(radius,5,CAMERA_GREEN));
+      dial.add(makeCircle(radius, 256, CAMERA_GREEN, 2));
+      dial.add(makeCircle(radius - 2.4, 256, CAMERA_GREEN, 1));
+      dial.add(makeTicks(radius, 5, CAMERA_GREEN));
 
       // Degree numbers — 2x larger, tucked inside the ring and rotated to read from the rig outward
-      for(let deg=0; deg<360; deg+=30){
-        const angle=THREE.MathUtils.degToRad(deg), rr=radius-3.6;
-        const { pivot } = createRadialLabel({ text:String(deg), radius:rr, angleRad:angle, scale:4.8, color:CAMERA_GREEN, bold:false, height:0.01 });
+      for (let deg = 0; deg < 360; deg += 30) {
+        const angle = THREE.MathUtils.degToRad(deg), rr = radius - 3.6;
+        const {pivot} = createRadialLabel({text: String(deg), radius: rr, angleRad: angle, scale: 4.8, color: CAMERA_GREEN, bold: false, height: 0.01});
         dial.add(pivot);
       }
 
       // Cardinals — 3x larger; pushed further OUT (double previous push) and sharing the same outward-facing rotation
-      const cards=[['N',0,YELLOW],['E',90,CAMERA_GREEN],['S',180,CAMERA_GREEN],['W',270,CAMERA_GREEN]];
+      const cards = [['N', 0, YELLOW], ['E', 90, CAMERA_GREEN], ['S', 180, CAMERA_GREEN], ['W', 270, CAMERA_GREEN]];
       const CARDINAL_PUSH = 2.4; // double previous 1.2
-      for(const [t,deg,col] of cards){
-        const angle=THREE.MathUtils.degToRad(deg);
+      for (const [t, deg, col] of cards) {
+        const angle = THREE.MathUtils.degToRad(deg);
         const rr = radius + CARDINAL_PUSH; // outside the ring to avoid overlap
-        const { pivot } = createRadialLabel({ text:t, radius:rr, angleRad:angle, scale:9.6, color:col, bold:true, height:0.02 });
+        const {pivot} = createRadialLabel({text: t, radius: rr, angleRad: angle, scale: 9.6, color: col, bold: true, height: 0.02});
         dial.add(pivot);
       }
 
       // Yellow North caret (points along +Z)
       const caretGeo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0,0,radius+1.2),
-        new THREE.Vector3(0,0,radius-1.5)
+        new THREE.Vector3(0, 0, radius + 1.2),
+        new THREE.Vector3(0, 0, radius - 1.5)
       ]);
-      const caret = new THREE.Line(caretGeo,new THREE.LineBasicMaterial({ color:YELLOW, linewidth:2 }));
+      const caret = new THREE.Line(caretGeo, new THREE.LineBasicMaterial({color: YELLOW, linewidth: 2}));
 
       // Keep your previous transforms
       g.rotation.y = Math.PI;
-      dial.rotation.y = -Math.PI/2;
+      dial.rotation.y = -Math.PI / 2;
 
       g.add(dial, caret);
       scene.add(g);
 
-      const setCameraBearingFromPoint = (worldPoint)=>{
-        if(!worldPoint) return;
-        dial.updateWorldMatrix(true,false);
+      const setCameraBearingFromPoint = (worldPoint) => {
+        if (!worldPoint) return;
+        dial.updateWorldMatrix(true, false);
         TMP_LOCAL.copy(worldPoint);
         dial.worldToLocal(TMP_LOCAL);
         TMP_LOCAL.y = 0;
@@ -209,17 +243,17 @@
         cameraLineGeo.computeBoundingSphere();
       };
 
-      const setDetectionPoints = (points)=>{
-        dial.updateWorldMatrix(true,false);
-        while(detectionRoot.children.length){
+      const setDetectionPoints = (points) => {
+        dial.updateWorldMatrix(true, false);
+        while (detectionRoot.children.length) {
           const child = detectionRoot.children.pop();
           detectionRoot.remove(child);
         }
-        for(const line of detectionLines){ line.geometry.dispose(); dial.remove(line); }
+        for (const line of detectionLines) {line.geometry.dispose(); dial.remove(line);}
         detectionLines.length = 0;
-        if(!points) return;
-        for(const point of points){
-          if(!point) continue;
+        if (!points) return;
+        for (const point of points) {
+          if (!point) continue;
           TMP_LOCAL.copy(point);
           dial.worldToLocal(TMP_LOCAL);
           TMP_LOCAL.y = 0;
@@ -236,126 +270,132 @@
         }
       };
 
-      return { group: g, setCameraBearingFromPoint, setDetectionPoints };
+      return {group: g, setCameraBearingFromPoint, setDetectionPoints};
     }
 
     // Map UV -> world on live-feed plane
-    function uvToWorldOnScreen(screen, feedW, feedH, u, v){
-      const local=new THREE.Vector3((u-0.5)*feedW, (0.5-v)*feedH, 0);
+    function uvToWorldOnScreen(screen, feedW, feedH, u, v) {
+      const local = new THREE.Vector3((u - 0.5) * feedW, (0.5 - v) * feedH, 0);
       return local.applyMatrix4(screen.matrixWorld);
     }
 
     // bbox center to normalized [0..1] UV
-    function bboxToCenterUV(bb, imgW, imgH){
-      const clamp01=t=>Math.min(1,Math.max(0,t));
-      if (bb && typeof bb==='object' && !Array.isArray(bb)) {
-        if (('x1'in bb && 'y1'in bb && 'x2'in bb && 'y2'in bb) || ('left'in bb && 'top'in bb && 'right'in bb && 'bottom'in bb)){
-          const x1=bb.x1 ?? bb.left, y1=bb.y1 ?? bb.top, x2=bb.x2 ?? bb.right, y2=bb.y2 ?? bb.bottom;
-          const norm=x1<=1 && y1<=1 && x2<=1 && y2<=1;
-          return [clamp01(((x1+x2)*0.5)/(norm?1:imgW)), clamp01(((y1+y2)*0.5)/(norm?1:imgH))];
+    function bboxToCenterUV(bb, imgW, imgH) {
+      const clamp01 = t => Math.min(1, Math.max(0, t));
+      if (bb && typeof bb === 'object' && !Array.isArray(bb)) {
+        if (('x1' in bb && 'y1' in bb && 'x2' in bb && 'y2' in bb) || ('left' in bb && 'top' in bb && 'right' in bb && 'bottom' in bb)) {
+          const x1 = bb.x1 ?? bb.left, y1 = bb.y1 ?? bb.top, x2 = bb.x2 ?? bb.right, y2 = bb.y2 ?? bb.bottom;
+          const norm = x1 <= 1 && y1 <= 1 && x2 <= 1 && y2 <= 1;
+          return [clamp01(((x1 + x2) * 0.5) / (norm ? 1 : imgW)), clamp01(((y1 + y2) * 0.5) / (norm ? 1 : imgH))];
         }
-        if (('x'in bb && 'y'in bb && ('w'in bb || 'width'in bb) && ('h'in bb || 'height'in bb))){
-          const x=bb.x ?? bb.left ?? 0, y=bb.y ?? bb.top ?? 0, w=bb.w ?? bb.width ?? 0, h=bb.h ?? bb.height ?? 0;
-          const norm=x<=1 && y<=1 && w<=1 && h<=1;
-          return [clamp01((x+w*0.5)/(norm?1:imgW)), clamp01((y+h*0.5)/(norm?1:imgH))];
+        if (('x' in bb && 'y' in bb && ('w' in bb || 'width' in bb) && ('h' in bb || 'height' in bb))) {
+          const x = bb.x ?? bb.left ?? 0, y = bb.y ?? bb.top ?? 0, w = bb.w ?? bb.width ?? 0, h = bb.h ?? bb.height ?? 0;
+          const norm = x <= 1 && y <= 1 && w <= 1 && h <= 1;
+          return [clamp01((x + w * 0.5) / (norm ? 1 : imgW)), clamp01((y + h * 0.5) / (norm ? 1 : imgH))];
         }
       }
-      if (Array.isArray(bb) && bb.length===4){
-        const [a,b,c,d]=bb, looksXYXYpx=(a<c)&&(b<d)&&(c<=imgW+1)&&(d<=imgH+1);
-        if (looksXYXYpx) return [clamp01((a+c)*0.5/imgW), clamp01((b+d)*0.5/imgH)];
-        const looksXYXYnorm=(a<=1&&b<=1&&c<=1&&d<=1)&&(a<c)&&(b<d);
-        if (looksXYXYnorm) return [clamp01((a+c)*0.5), clamp01((b+d)*0.5)];
-        const norm=a<=1&&b<=1&&c<=1&&d<=1;
-        return [clamp01((a+c*0.5)/(norm?1:imgW)), clamp01((b+d*0.5)/(norm?1:imgH))];
+      if (Array.isArray(bb) && bb.length === 4) {
+        const [a, b, c, d] = bb, looksXYXYpx = (a < c) && (b < d) && (c <= imgW + 1) && (d <= imgH + 1);
+        if (looksXYXYpx) return [clamp01((a + c) * 0.5 / imgW), clamp01((b + d) * 0.5 / imgH)];
+        const looksXYXYnorm = (a <= 1 && b <= 1 && c <= 1 && d <= 1) && (a < c) && (b < d);
+        if (looksXYXYnorm) return [clamp01((a + c) * 0.5), clamp01((b + d) * 0.5)];
+        const norm = a <= 1 && b <= 1 && c <= 1 && d <= 1;
+        return [clamp01((a + c * 0.5) / (norm ? 1 : imgW)), clamp01((b + d * 0.5) / (norm ? 1 : imgH))];
       }
-      return [0.5,0.5];
+      return [0.5, 0.5];
     }
 
     // ---------- map ----------
-    const d2r=d=>d*Math.PI/180;
-    function latLonToTileXY(lat,lon,z){ const x=Math.floor((lon+180)/360*Math.pow(2,z)); const y=Math.floor((1-Math.log(Math.tan(d2r(lat))+1/Math.cos(d2r(lat)))/Math.PI)/2*Math.pow(2,z)); return {x,y}; }
-    async function buildTilePatch({lat,lon},zoom=16){
-      const {x:cx,y:cy}=latLonToTileXY(lat,lon,zoom); const tileSize=256, grid=3;
-      const canvas=document.getElementById('tileCanvas'); canvas.width=tileSize*grid; canvas.height=tileSize*grid;
-      const ctx=canvas.getContext('2d'); let ok=0; const loads=[];
-      for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){
-        const url=`https://tile.openstreetmap.org/${zoom}/${cx+dx}/${cy+dy}.png`;
-        loads.push(new Promise(res=>{ const img=new Image(); img.crossOrigin='anonymous';
-          img.onload=()=>{ ctx.drawImage(img,(dx+1)*tileSize,(dy+1)*tileSize); ok++; res(); };
-          img.onerror=()=>res(); img.src=url; }));
+    const d2r = d => d * Math.PI / 180;
+    function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
+    async function buildTilePatch({lat, lon}, zoom = 16) {
+      const {x: cx, y: cy} = latLonToTileXY(lat, lon, zoom); const tileSize = 256, grid = 3;
+      const canvas = document.getElementById('tileCanvas'); canvas.width = tileSize * grid; canvas.height = tileSize * grid;
+      const ctx = canvas.getContext('2d'); let ok = 0; const loads = [];
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const url = `https://tile.openstreetmap.org/${zoom}/${cx + dx}/${cy + dy}.png`;
+        loads.push(new Promise(res => {
+          const img = new Image(); img.crossOrigin = 'anonymous';
+          img.onload = () => {ctx.drawImage(img, (dx + 1) * tileSize, (dy + 1) * tileSize); ok++; res();};
+          img.onerror = () => res(); img.src = url;
+        }));
       }
-      await Promise.all(loads); if(!ok) throw new Error('No tiles loaded'); return canvas;
+      await Promise.all(loads); if (!ok) throw new Error('No tiles loaded'); return canvas;
     }
 
     // ---------- MJPEG ----------
-    class MJPEGTexture{
-      constructor(url){ this.url=url; this.canvas=document.createElement('canvas'); this.ctx=this.canvas.getContext('2d');
-        this.texture=new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture);
-        this.ok=false; this.fps=0; this._frames=0; this._last=performance.now(); this._w=0; this._h=0; this._consumers=new Set(); }
-      _setupTex(tex){ tex.colorSpace=THREE.SRGBColorSpace; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping; tex.flipY=true; tex.needsUpdate=true; }
-      attach(material){ material.map=this.texture; material.needsUpdate=true; this._consumers.add(material); }
-      _recreateTextureForSize(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; this.canvas=c; this.ctx=c.getContext('2d');
-        const old=this.texture; this.texture=new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture); if(old) old.dispose();
-        for(const m of this._consumers){ m.map=this.texture; m.needsUpdate=true; } }
-      async start(onStatus){
-        try{
-          const resp=await fetch(this.url,{mode:'cors'}); if(!resp.body) throw new Error('no body'); const reader=resp.body.getReader();
-          let buf=new Uint8Array(0); const SOI=[0xFF,0xD8], EOI=[0xFF,0xD9];
-          const find=(b,m)=>{ for(let i=0;i<b.length-1;i++) if(b[i]===m[0]&&b[i+1]===m[1]) return i; return -1; };
-          this.ok=true; onStatus?.(this);
-          while(true){
-            const {value,done}=await reader.read(); if(done) break; if(!value) continue;
-            const tmp=new Uint8Array(buf.length+value.length); tmp.set(buf); tmp.set(value,buf.length); buf=tmp;
-            while(true){
-              const s=find(buf,SOI), e=find(buf,EOI);
-              if(s>=0 && e>s){
-                const frame=buf.slice(s,e+2); buf=buf.slice(e+2);
-                try{
-                  const bmp=await createImageBitmap(new Blob([frame],{type:'image/jpeg'}),{imageOrientation:'from-image'});
-                  const w=bmp.width|0, h=bmp.height|0; if(!w||!h) continue;
-                  if(w!==this._w||h!==this._h){ this._w=w; this._h=h; this._recreateTextureForSize(w,h); }
-                  this.ctx.drawImage(bmp,0,0,this._w,this._h); this.texture.needsUpdate=true;
-                  this._frames++; const now=performance.now();
-                  if(now-this._last>1000){ this.fps=(this._frames*1000)/(now-this._last); this._frames=0; this._last=now; onStatus?.(this); }
-                }catch{}
+    class MJPEGTexture {
+      constructor(url) {
+        this.url = url; this.canvas = document.createElement('canvas'); this.ctx = this.canvas.getContext('2d');
+        this.texture = new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture);
+        this.ok = false; this.fps = 0; this._frames = 0; this._last = performance.now(); this._w = 0; this._h = 0; this._consumers = new Set();
+      }
+      _setupTex(tex) {tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.flipY = true; tex.needsUpdate = true;}
+      attach(material) {material.map = this.texture; material.needsUpdate = true; this._consumers.add(material);}
+      _recreateTextureForSize(w, h) {
+        const c = document.createElement('canvas'); c.width = w; c.height = h; this.canvas = c; this.ctx = c.getContext('2d');
+        const old = this.texture; this.texture = new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture); if (old) old.dispose();
+        for (const m of this._consumers) {m.map = this.texture; m.needsUpdate = true;}
+      }
+      async start(onStatus) {
+        try {
+          const resp = await fetch(this.url, {mode: 'cors'}); if (!resp.body) throw new Error('no body'); const reader = resp.body.getReader();
+          let buf = new Uint8Array(0); const SOI = [0xFF, 0xD8], EOI = [0xFF, 0xD9];
+          const find = (b, m) => {for (let i = 0; i < b.length - 1; i++) if (b[i] === m[0] && b[i + 1] === m[1]) return i; return -1;};
+          this.ok = true; onStatus?.(this);
+          while (true) {
+            const {value, done} = await reader.read(); if (done) break; if (!value) continue;
+            const tmp = new Uint8Array(buf.length + value.length); tmp.set(buf); tmp.set(value, buf.length); buf = tmp;
+            while (true) {
+              const s = find(buf, SOI), e = find(buf, EOI);
+              if (s >= 0 && e > s) {
+                const frame = buf.slice(s, e + 2); buf = buf.slice(e + 2);
+                try {
+                  const bmp = await createImageBitmap(new Blob([frame], {type: 'image/jpeg'}), {imageOrientation: 'from-image'});
+                  const w = bmp.width | 0, h = bmp.height | 0; if (!w || !h) continue;
+                  if (w !== this._w || h !== this._h) {this._w = w; this._h = h; this._recreateTextureForSize(w, h);}
+                  this.ctx.drawImage(bmp, 0, 0, this._w, this._h); this.texture.needsUpdate = true;
+                  this._frames++; const now = performance.now();
+                  if (now - this._last > 1000) {this.fps = (this._frames * 1000) / (now - this._last); this._frames = 0; this._last = now; onStatus?.(this);}
+                } catch { }
               } else break;
             }
           }
-        }catch{
-          this.ok=false; this.fps=0; onStatus?.(this);
+        } catch {
+          this.ok = false; this.fps = 0; onStatus?.(this);
         }
       }
     }
 
     // ---------- Three bootstrap ----------
-    function bootScene(hooks){
-      const canvas=document.getElementById('scene');
-      const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+    function bootScene(hooks) {
+      const canvas = document.getElementById('scene');
+      const renderer = new THREE.WebGLRenderer({canvas, antialias: true});
       renderer.setPixelRatio(window.devicePixelRatio || 1);
 
-      const scene=new THREE.Scene();
-      scene.background=new THREE.Color(0x0b0f14);
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0b0f14);
 
-      const camera=new THREE.PerspectiveCamera(60,2,0.1,2000);
-      camera.position.set(0,160,260);
+      const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 2000);
+      camera.position.set(0, 160, 260);
 
-      const controls=new OrbitControls(camera,renderer.domElement);
+      const controls = new OrbitControls(camera, renderer.domElement);
 
       // Recommended OrbitControls setup for smooth, predictable zoom on all devices
       controls.enableDamping = true;
       controls.dampingFactor = 0.1;
 
       controls.enableZoom = true;
-      controls.zoomSpeed  = 1.0;          // standard speed
+      controls.zoomSpeed = 1.0;          // standard speed
       controls.zoomToCursor = false;      // avoids jumpy zoom on some desktop wheels
-      controls.enablePan  = true;
-      controls.panSpeed   = 1.0;
+      controls.enablePan = true;
+      controls.panSpeed = 1.0;
 
       // Explicit mouse/touch mappings (Three.js defaults, but set explicitly for consistency)
       controls.mouseButtons = {
-        LEFT:   THREE.MOUSE.ROTATE,
+        LEFT: THREE.MOUSE.ROTATE,
         MIDDLE: THREE.MOUSE.DOLLY,
-        RIGHT:  THREE.MOUSE.PAN
+        RIGHT: THREE.MOUSE.PAN
       };
       controls.touches = {
         ONE: THREE.TOUCH.ROTATE,
@@ -371,132 +411,132 @@
       controls.listenToKeyEvents(window); // ensures keyboard works consistently
       controls.update();
 
-      scene.add(new THREE.HemisphereLight(0xbcd1ff,0x232b35,0.6));
-      const dir=new THREE.DirectionalLight(0xffffff,0.9);
-      dir.position.set(80,120,60);
+      scene.add(new THREE.HemisphereLight(0xbcd1ff, 0x232b35, 0.6));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+      dir.position.set(80, 120, 60);
       scene.add(dir);
 
-      function resize(){
-        const w=window.innerWidth, h=window.innerHeight;
-        camera.aspect=w/h; camera.updateProjectionMatrix();
-        renderer.setSize(w,h,false);
+      function resize() {
+        const w = window.innerWidth, h = window.innerHeight;
+        camera.aspect = w / h; camera.updateProjectionMatrix();
+        renderer.setSize(w, h, false);
       }
       addEventListener('resize', resize); resize();
 
-      const clock=new THREE.Clock();
-      (function tick(){
+      const clock = new THREE.Clock();
+      (function tick() {
         hooks?.update?.(clock.getDelta());
         controls.update();
-        renderer.render(scene,camera);
+        renderer.render(scene, camera);
         requestAnimationFrame(tick);
       })();
 
-      return {scene,camera};
+      return {scene, camera};
     }
 
     // ---------- Frustum fitted to the live-feed plane ----------
-    function makeRigForScreen(scene, screen, opts = {}){
-      const fovDeg=opts.fovDeg ?? 50, far=opts.far ?? 60, color=opts.color ?? CAMERA_ORANGE;
-      const p=screen.geometry.parameters, halfW=(p?.width ?? 1)*0.5*screen.scale.x, halfH=(p?.height ?? 1)*0.5*screen.scale.y;
-      const center=new THREE.Vector3(); screen.getWorldPosition(center); const q=new THREE.Quaternion(); screen.getWorldQuaternion(q);
-      const n=new THREE.Vector3(0,0,1).applyQuaternion(q).normalize(), right=new THREE.Vector3(1,0,0).applyQuaternion(q).normalize(), up=new THREE.Vector3(0,1,0).applyQuaternion(q).normalize();
-      const cTL=center.clone().add(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
-      const cTR=center.clone().add(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
-      const cBL=center.clone().sub(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
-      const cBR=center.clone().sub(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
-      const dist=halfH/Math.tan(THREE.MathUtils.degToRad(fovDeg*0.5)); const origin=center.clone().sub(n.clone().multiplyScalar(dist));
-      const farCenter=origin.clone().add(n.clone().multiplyScalar(far)); const s=far/dist;
-      const fTL=farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
-      const fTR=farCenter.clone().add(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
-      const fBL=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).sub(right.clone().multiplyScalar(halfW*s));
-      const fBR=farCenter.clone().sub(up.clone().multiplyScalar(halfH*s)).add(right.clone().multiplyScalar(halfW*s));
+    function makeRigForScreen(scene, screen, opts = {}) {
+      const fovDeg = opts.fovDeg ?? 50, far = opts.far ?? 60, color = opts.color ?? CAMERA_ORANGE;
+      const p = screen.geometry.parameters, halfW = (p?.width ?? 1) * 0.5 * screen.scale.x, halfH = (p?.height ?? 1) * 0.5 * screen.scale.y;
+      const center = new THREE.Vector3(); screen.getWorldPosition(center); const q = new THREE.Quaternion(); screen.getWorldQuaternion(q);
+      const n = new THREE.Vector3(0, 0, 1).applyQuaternion(q).normalize(), right = new THREE.Vector3(1, 0, 0).applyQuaternion(q).normalize(), up = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+      const cTL = center.clone().add(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
+      const cTR = center.clone().add(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
+      const cBL = center.clone().sub(up.clone().multiplyScalar(halfH)).sub(right.clone().multiplyScalar(halfW));
+      const cBR = center.clone().sub(up.clone().multiplyScalar(halfH)).add(right.clone().multiplyScalar(halfW));
+      const dist = halfH / Math.tan(THREE.MathUtils.degToRad(fovDeg * 0.5)); const origin = center.clone().sub(n.clone().multiplyScalar(dist));
+      const farCenter = origin.clone().add(n.clone().multiplyScalar(far)); const s = far / dist;
+      const fTL = farCenter.clone().add(up.clone().multiplyScalar(halfH * s)).sub(right.clone().multiplyScalar(halfW * s));
+      const fTR = farCenter.clone().add(up.clone().multiplyScalar(halfH * s)).add(right.clone().multiplyScalar(halfW * s));
+      const fBL = farCenter.clone().sub(up.clone().multiplyScalar(halfH * s)).sub(right.clone().multiplyScalar(halfW * s));
+      const fBR = farCenter.clone().sub(up.clone().multiplyScalar(halfH * s)).add(right.clone().multiplyScalar(halfW * s));
 
-      const mat=new THREE.LineBasicMaterial({ color, depthTest:true, depthWrite:false });
-      const nearRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL,cTR,cBR,cBL,cTL]), mat);
-      const farRect=new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL,fTR,fBR,fBL,fTL]), mat);
-      const edges=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([origin,cTL, origin,cTR, origin,cBL, origin,cBR]), mat);
+      const mat = new THREE.LineBasicMaterial({color, depthTest: true, depthWrite: false});
+      const nearRect = new THREE.Line(new THREE.BufferGeometry().setFromPoints([cTL, cTR, cBR, cBL, cTL]), mat);
+      const farRect = new THREE.Line(new THREE.BufferGeometry().setFromPoints([fTL, fTR, fBR, fBL, fTL]), mat);
+      const edges = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([origin, cTL, origin, cTR, origin, cBL, origin, cBR]), mat);
 
       // Replace glyph with a single blue vertical line from camera origin down to ground
       const cameraDownGeo = new THREE.BufferGeometry().setFromPoints([
         origin.clone(),
         new THREE.Vector3(origin.x, 0, origin.z)
       ]);
-      const cameraDown = new THREE.Line(cameraDownGeo, new THREE.LineBasicMaterial({ color: BLUE_GLYPH, linewidth: 2 }));
+      const cameraDown = new THREE.Line(cameraDownGeo, new THREE.LineBasicMaterial({color: BLUE_GLYPH, linewidth: 2}));
 
-      const normalLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([center,origin]), new THREE.LineDashedMaterial({ color, dashSize:2, gapSize:1 })); normalLine.computeLineDistances();
+      const normalLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints([center, origin]), new THREE.LineDashedMaterial({color, dashSize: 2, gapSize: 1})); normalLine.computeLineDistances();
 
-      const group=new THREE.Group();
+      const group = new THREE.Group();
       group.add(nearRect, edges, cameraDown, normalLine); //farRect, 
       scene.add(group);
-      return { group, origin };
+      return {group, origin};
     }
 
     // ---------- Alpine app ----------
-    window.hud=()=>({
-      geo:{ok:false,lat:45.813,lon:15.977},
-      map:{ready:false,mesh:null,zoom:16},
-      stream:{ok:false,fps:0},
-      three:null, rig:null, mjpeg:null, frustumVisible:true,
+    window.hud = () => ({
+      geo: {ok: false, lat: 45.813, lon: 15.977},
+      map: {ready: false, mesh: null, zoom: 16},
+      stream: {ok: false, fps: 0},
+      three: null, rig: null, mjpeg: null, frustumVisible: true,
 
-      screen:null,
-      feed:{w:80, h:60},
+      screen: null,
+      feed: {w: 80, h: 60},
       cameraYaw: 0.0,
 
-      detLines:null,      // line group
-      detDots:null,       // dot group
-      detMat:null,        // stable line material
-      uiDetections:[],
-      sse:null,
+      detLines: null,      // line group
+      detDots: null,       // dot group
+      detMat: null,        // stable line material
+      uiDetections: [],
+      sse: null,
 
-      async init(){
-        this.three=bootScene({update:()=>{}});
-        this.three.camera.lookAt(0,0,0);
+      async init() {
+        this.three = bootScene({update: () => { }});
+        this.three.camera.lookAt(0, 0, 0);
 
         await this.acquireLocation();
         await this.loadMapPlane();
 
-        this.mjpeg=new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
-        this.mjpeg.start(s=>{ this.stream.ok=s.ok; this.stream.fps=s.fps; });
+        this.mjpeg = new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
+        this.mjpeg.start(s => {this.stream.ok = s.ok; this.stream.fps = s.fps;});
 
-        const feedW=80, feedH=60; this.feed={ w:feedW, h:feedH };
-        const lift=feedH*0.5;
-        const screenGeom=new THREE.PlaneGeometry(feedW,feedH);
-        const screenMat=new THREE.MeshBasicMaterial({ side:THREE.DoubleSide, depthTest:false, depthWrite:false, toneMapped:false });
+        const feedW = 80, feedH = 60; this.feed = {w: feedW, h: feedH};
+        const lift = feedH * 0.5;
+        const screenGeom = new THREE.PlaneGeometry(feedW, feedH);
+        const screenMat = new THREE.MeshBasicMaterial({side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false});
         this.mjpeg.attach(screenMat);
-        const screen=new THREE.Mesh(screenGeom,screenMat);
+        const screen = new THREE.Mesh(screenGeom, screenMat);
         screen.position.set(0, 5 + lift, 0);
         this.three.scene.add(screen);
-        this.screen=screen;
+        this.screen = screen;
 
         this.setCameraYaw(this.cameraYaw);
 
-        this.rig = makeRigForScreen(this.three.scene, screen, { fovDeg:50, far:35, color:CAMERA_ORANGE });
+        this.rig = makeRigForScreen(this.three.scene, screen, {fovDeg: 50, far: 35, color: CAMERA_ORANGE});
         this.rig.group.visible = this.frustumVisible;
 
-        this.azimuth = makeAzimuthDial({ scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x,0,this.rig.origin.z), radius: 90, y: 2 });
+        this.azimuth = makeAzimuthDial({scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z), radius: 90, y: 2});
         this.updateCameraBearingSphere();
 
         this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
-        this.detDots  = new THREE.Group(); this.three.scene.add(this.detDots);
-        this.detMat   = new THREE.LineBasicMaterial({ color: CAMERA_GREEN, depthTest:true, depthWrite:false });
+        this.detDots = new THREE.Group(); this.three.scene.add(this.detDots);
+        this.detMat = new THREE.LineBasicMaterial({color: CAMERA_GREEN, depthTest: true, depthWrite: false});
 
-        try{
-          this.sse=new EventSource('http://127.0.0.1:8080/stream_detections');
-          this.sse.onmessage=(ev)=>{ if(!ev.data) return; try{ this.handleDetections(JSON.parse(ev.data)); }catch{} };
-          this.sse.onerror=()=>{};
-        }catch{}
+        try {
+          this.sse = new EventSource('http://127.0.0.1:8080/stream_detections');
+          this.sse.onmessage = (ev) => {if (!ev.data) return; try {this.handleDetections(JSON.parse(ev.data));} catch { } };
+          this.sse.onerror = () => { };
+        } catch { }
       },
 
       // score -> hex: 0(red) -> 0.5(yellow) -> 1(green)
-      scoreToHex(s){
-        const clamped=Math.max(0,Math.min(1,s ?? 0.5));
+      scoreToHex(s) {
+        const clamped = Math.max(0, Math.min(1, s ?? 0.5));
         const h = clamped * 120; // 0..120
-        const c=new THREE.Color().setHSL(h/360, 0.9, 0.55);
+        const c = new THREE.Color().setHSL(h / 360, 0.9, 0.55);
         return `#${c.getHexString()}`;
       },
 
-      handleDetections(msg){
-        if(!this.screen || !this.rig) return;
+      handleDetections(msg) {
+        if (!this.screen || !this.rig) return;
 
         const imgW = msg.width ?? msg.image_width ?? this.mjpeg?._w ?? 1;
         const imgH = msg.height ?? msg.image_height ?? this.mjpeg?._h ?? 1;
@@ -505,40 +545,40 @@
           .filter(d => (d.class ?? d.label ?? 'FACE') === 'FACE');
 
         // Clear previous frame primitives
-        while (this.detLines.children.length) { const c=this.detLines.children.pop(); c.geometry?.dispose?.(); }
-        while (this.detDots.children.length)  { const c=this.detDots.children.pop();  c.geometry?.dispose?.(); c.material?.dispose?.(); }
+        while (this.detLines.children.length) {const c = this.detLines.children.pop(); c.geometry?.dispose?.();}
+        while (this.detDots.children.length) {const c = this.detDots.children.pop(); c.geometry?.dispose?.(); c.material?.dispose?.();}
 
         const ui = [];
         const detectionPoints = [];
 
-        for(const det of boxes){
+        for (const det of boxes) {
           const bb = det.bbox ?? det;
           const [u, v] = bboxToCenterUV(bb, imgW, imgH);
           const hit = uvToWorldOnScreen(this.screen, this.feed.w, this.feed.h, u, v);
 
           // Stable line
-          const lineGeo=new THREE.BufferGeometry().setFromPoints([ this.rig.origin.clone(), hit ]);
+          const lineGeo = new THREE.BufferGeometry().setFromPoints([this.rig.origin.clone(), hit]);
           this.detLines.add(new THREE.Line(lineGeo, this.detMat));
 
           // Score-colored dot
-          const dotGeo=new THREE.SphereGeometry(0.7, 12, 12);
-          const dotMat=new THREE.MeshBasicMaterial({ color: this.scoreToHex(det.score ?? 0.5) });
-          const dot=new THREE.Mesh(dotGeo, dotMat); dot.position.copy(hit); this.detDots.add(dot);
+          const dotGeo = new THREE.SphereGeometry(0.7, 12, 12);
+          const dotMat = new THREE.MeshBasicMaterial({color: this.scoreToHex(det.score ?? 0.5)});
+          const dot = new THREE.Mesh(dotGeo, dotMat); dot.position.copy(hit); this.detDots.add(dot);
 
           detectionPoints.push(hit);
 
           // UI item
-          let wPx=0,hPx=0;
-          if (Array.isArray(bb) && bb.length===4){ wPx=Math.abs(bb[2]-bb[0]); hPx=Math.abs(bb[3]-bb[1]); }
-          else if ('right'in bb && 'left'in bb && 'bottom'in bb && 'top'in bb){ wPx=Math.abs(bb.right-bb.left); hPx=Math.abs(bb.bottom-bb.top); }
-          else if ('w'in bb || 'width'in bb){ wPx=Math.abs(bb.w ?? bb.width ?? 0); hPx=Math.abs(bb.h ?? bb.height ?? 0); }
+          let wPx = 0, hPx = 0;
+          if (Array.isArray(bb) && bb.length === 4) {wPx = Math.abs(bb[2] - bb[0]); hPx = Math.abs(bb[3] - bb[1]);}
+          else if ('right' in bb && 'left' in bb && 'bottom' in bb && 'top' in bb) {wPx = Math.abs(bb.right - bb.left); hPx = Math.abs(bb.bottom - bb.top);}
+          else if ('w' in bb || 'width' in bb) {wPx = Math.abs(bb.w ?? bb.width ?? 0); hPx = Math.abs(bb.h ?? bb.height ?? 0);}
 
           const score = det.score ?? 0;
           ui.push({
             key: `${u.toFixed(3)}:${v.toFixed(3)}:${score.toFixed(2)}`,
             label: det.class ?? det.label ?? 'FACE',
             score,
-            u, v, w:wPx, h:hPx,
+            u, v, w: wPx, h: hPx,
             hex: this.scoreToHex(score)
           });
         }
@@ -548,48 +588,49 @@
         this.updateCameraBearingSphere();
       },
 
-      setCameraYaw(yawRad){
+      setCameraYaw(yawRad) {
         this.cameraYaw = yawRad;
-        if(this.screen){
+        if (this.screen) {
           this.screen.rotation.set(0, this.cameraYaw + CAMERA_YAW_OFFSET, 0);
         }
         this.updateCameraBearingSphere();
       },
 
-      updateCameraBearingSphere(){
-        if(!this.azimuth?.setCameraBearingFromPoint || !this.screen) return;
+      updateCameraBearingSphere() {
+        if (!this.azimuth?.setCameraBearingFromPoint || !this.screen) return;
         this.screen.getWorldPosition(TMP_CENTER);
         this.azimuth.setCameraBearingFromPoint(TMP_CENTER);
       },
 
-      async acquireLocation(){
-        const params=new URLSearchParams(location.search);
-        if(params.get('lat') && params.get('lon')){ this.geo.ok=true; this.geo.lat=parseFloat(params.get('lat')); this.geo.lon=parseFloat(params.get('lon')); return; }
-        const p=new Promise(resolve=>{
-          if(!('geolocation' in navigator)) return resolve(false);
+      async acquireLocation() {
+        const params = new URLSearchParams(location.search);
+        if (params.get('lat') && params.get('lon')) {this.geo.ok = true; this.geo.lat = parseFloat(params.get('lat')); this.geo.lon = parseFloat(params.get('lon')); return;}
+        const p = new Promise(resolve => {
+          if (!('geolocation' in navigator)) return resolve(false);
           navigator.geolocation.getCurrentPosition(
-            pos=>{ this.geo.ok=true; this.geo.lat=pos.coords.latitude; this.geo.lon=pos.coords.longitude; resolve(true); },
-            ()=>resolve(false), {enableHighAccuracy:true,timeout:5000,maximumAge:30000}
+            pos => {this.geo.ok = true; this.geo.lat = pos.coords.latitude; this.geo.lon = pos.coords.longitude; resolve(true);},
+            () => resolve(false), {enableHighAccuracy: true, timeout: 5000, maximumAge: 30000}
           );
         }); await p;
       },
 
-      async loadMapPlane(){
-        try{
-          const patch=await buildTilePatch({lat:this.geo.lat,lon:this.geo.lon},this.map.zoom);
-          const tex=new THREE.CanvasTexture(patch); tex.colorSpace=THREE.SRGBColorSpace; tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping; tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter;
-          const planeSize=1000, aspect=patch.height/patch.width;
-          const ground=new THREE.Mesh(new THREE.PlaneGeometry(planeSize,planeSize*aspect), new THREE.MeshStandardMaterial({map:tex}));
-          ground.rotation.x=-Math.PI/2;
-          if(this.map.mesh){ this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose(); }
-          this.three.scene.add(ground); this.map.mesh=ground; this.map.ready=true;
-        }catch{ this.map.ready=false; }
+      async loadMapPlane() {
+        try {
+          const patch = await buildTilePatch({lat: this.geo.lat, lon: this.geo.lon}, this.map.zoom);
+          const tex = new THREE.CanvasTexture(patch); tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+          const planeSize = 1000, aspect = patch.height / patch.width;
+          const ground = new THREE.Mesh(new THREE.PlaneGeometry(planeSize, planeSize * aspect), new THREE.MeshStandardMaterial({map: tex}));
+          ground.rotation.x = -Math.PI / 2;
+          if (this.map.mesh) {this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose();}
+          this.three.scene.add(ground); this.map.mesh = ground; this.map.ready = true;
+        } catch {this.map.ready = false;}
       },
 
-      toggleFrustum(){ this.frustumVisible=!this.frustumVisible; if(this.rig?.group) this.rig.group.visible=this.frustumVisible; },
+      toggleFrustum() {this.frustumVisible = !this.frustumVisible; if (this.rig?.group) this.rig.group.visible = this.frustumVisible;},
     });
   </script>
 
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </body>
+
 </html>
