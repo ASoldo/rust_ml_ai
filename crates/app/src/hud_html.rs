@@ -66,14 +66,37 @@ pub const HUD_INDEX_HTML: &str = r#"
     <!-- Single Recon Status card WITH Detections inside -->
     <div
       class="pointer-events-auto bg-slate-900/80 text-slate-100 rounded-xl p-3 shadow-lg border border-slate-700 min-w-[280px]">
-      <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
-      <div class="mt-1 text-sm space-y-0.5">
-        <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
-            x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
-        <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
-            x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
-        <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'"
-            x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
+      <div class="mt-2 space-y-3">
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-400/90">LivePreview</div>
+          <div class="mt-2 grid grid-cols-4 gap-1">
+            <button @click="setPreviewMode('original')"
+              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+              :class="previewMode === 'original' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Orig</button>
+            <button @click="setPreviewMode('delta')"
+              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+              :class="previewMode === 'delta' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">ΔColor</button>
+            <button @click="setPreviewMode('abs')"
+              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+              :class="previewMode === 'abs' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">AbsDiff</button>
+            <button @click="setPreviewMode('overlay')"
+              class="px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide transition"
+              :class="previewMode === 'overlay' ? 'bg-emerald-600 text-slate-100 border-emerald-400' : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'">Overlay</button>
+          </div>
+          <canvas x-ref="previewCanvas" class="mt-2 w-full max-w-xs rounded border border-slate-700 bg-black"
+            style="aspect-ratio: 4 / 3; image-rendering: pixelated;"></canvas>
+        </div>
+        <div>
+          <div class="text-xs uppercase tracking-wider text-slate-400">Recon Status</div>
+          <div class="mt-1 text-sm space-y-0.5">
+            <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
+                x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
+            <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
+                x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
+            <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'"
+                x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
+          </div>
+        </div>
       </div>
 
       <!-- Optional controls -->
@@ -494,6 +517,8 @@ pub const HUD_INDEX_HTML: &str = r#"
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
       loadingTimer: null,
+      previewMode: 'overlay',
+      preview: {canvas: null, ctx: null, prev: null, raf: null, threshold: 20, overlayAlpha: 0.6, buffers: {}, lastRender: 0},
       three: null, rig: null, mjpeg: null, frustumVisible: true,
 
       screen: null,
@@ -527,6 +552,151 @@ pub const HUD_INDEX_HTML: &str = r#"
           if (!this.loading.active) return;
           this.finishLoading({delay: 0, label});
         }, delay);
+      },
+
+      setPreviewMode(mode) {
+        if (!mode) return;
+        if (mode === this.previewMode) return;
+        this.previewMode = mode;
+        this.preview.prev = null; // reset baseline so diff recalculates cleanly
+      },
+
+      initLivePreview() {
+        this.$nextTick(() => {
+          const canvas = this.$refs.previewCanvas;
+          if (!canvas) return;
+          this.preview.canvas = canvas;
+          this.preview.ctx = canvas.getContext('2d', {willReadFrequently: true});
+          this.preview.prev = null;
+          this.preview.buffers = {};
+          this.preview.lastRender = 0;
+          this.startPreviewLoop();
+        });
+      },
+
+      startPreviewLoop() {
+        if (this.preview.raf) cancelAnimationFrame(this.preview.raf);
+        const tick = () => {
+          this.renderPreview();
+          this.preview.raf = requestAnimationFrame(tick);
+        };
+        this.preview.raf = requestAnimationFrame(tick);
+      },
+
+      stopPreviewLoop() {
+        if (this.preview.raf) cancelAnimationFrame(this.preview.raf);
+        this.preview.raf = null;
+      },
+
+      ensurePreviewBuffer(name, w, h) {
+        const buffers = this.preview.buffers || (this.preview.buffers = {});
+        let buf = buffers[name];
+        if (!buf || buf.width !== w || buf.height !== h) {
+          buf = this.preview.ctx.createImageData(w, h);
+          buffers[name] = buf;
+        }
+        return buf;
+      },
+
+      renderPreview() {
+        const canvas = this.preview.canvas;
+        const ctx = this.preview.ctx;
+        const mjpeg = this.mjpeg;
+        if (!canvas || !ctx || !mjpeg || !mjpeg.canvas || !mjpeg.ctx) return;
+
+        const now = performance.now();
+        const minInterval = this.previewMode === 'overlay' ? 80 : 45; // throttle heavy modes
+        if (now - (this.preview.lastRender ?? 0) < minInterval) return;
+        this.preview.lastRender = now;
+
+        const sourceCanvas = mjpeg.canvas;
+        const sourceCtx = mjpeg.ctx;
+        const w = mjpeg._w || sourceCanvas.width;
+        const h = mjpeg._h || sourceCanvas.height;
+        if (!w || !h) return;
+
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+
+        let curr;
+        try {
+          curr = sourceCtx.getImageData(0, 0, w, h);
+        } catch {
+          return;
+        }
+
+        if (!this.preview.prev) {
+          ctx.drawImage(sourceCanvas, 0, 0, w, h);
+          this.preview.prev = curr;
+          return;
+        }
+
+        const prev = this.preview.prev;
+        const currData = curr.data;
+        const prevData = prev.data;
+        const length = currData.length;
+        const threshold = this.preview.threshold;
+        const overlayAlpha = this.preview.overlayAlpha;
+
+        if (this.previewMode === 'original') {
+          ctx.drawImage(sourceCanvas, 0, 0, w, h);
+        } else if (this.previewMode === 'delta') {
+          const deltaImage = this.ensurePreviewBuffer('delta', w, h);
+          const out = deltaImage.data;
+          for (let i = 0; i < length; i += 4) {
+            const dr = currData[i] - prevData[i];
+            const dg = currData[i + 1] - prevData[i + 1];
+            const db = currData[i + 2] - prevData[i + 2];
+            out[i] = Math.max(0, Math.min(255, 128 + dr));
+            out[i + 1] = Math.max(0, Math.min(255, 128 + dg));
+            out[i + 2] = Math.max(0, Math.min(255, 128 + db));
+            out[i + 3] = 255;
+          }
+          ctx.putImageData(deltaImage, 0, 0);
+        } else if (this.previewMode === 'abs') {
+          const diffImage = this.ensurePreviewBuffer('diff', w, h);
+          const out = diffImage.data;
+          for (let i = 0; i < length; i += 4) {
+            const dr = currData[i] - prevData[i];
+            const dg = currData[i + 1] - prevData[i + 1];
+            const db = currData[i + 2] - prevData[i + 2];
+            let mag = (Math.abs(dr) + Math.abs(dg) + Math.abs(db)) / 3;
+            if (mag < threshold) mag = 0;
+            if (mag === 0) {
+              out[i] = out[i + 1] = out[i + 2] = 0;
+            } else {
+              out[i] = 255;
+              out[i + 1] = Math.min(255, 80 + mag * 1.1);
+              out[i + 2] = 0;
+            }
+            out[i + 3] = 255;
+          }
+          ctx.putImageData(diffImage, 0, 0);
+        } else {
+          ctx.drawImage(sourceCanvas, 0, 0, w, h);
+          const overlayImage = this.ensurePreviewBuffer('overlay', w, h);
+          const ov = overlayImage.data;
+          for (let i = 0; i < length; i += 4) {
+            const dr = currData[i] - prevData[i];
+            const dg = currData[i + 1] - prevData[i + 1];
+            const db = currData[i + 2] - prevData[i + 2];
+            let mag = (Math.abs(dr) + Math.abs(dg) + Math.abs(db)) / 3;
+            if (mag < threshold) mag = 0;
+            const rr = 255;
+            const gg = Math.min(255, 80 + mag * 1.1);
+            const bb = 0;
+            const alpha = mag === 0 ? 0 : Math.round((mag / 255) * overlayAlpha * 255);
+            ov[i] = rr;
+            ov[i + 1] = gg;
+            ov[i + 2] = bb;
+            ov[i + 3] = alpha;
+          }
+          ctx.putImageData(overlayImage, 0, 0);
+        }
+
+        this.preview.prev = curr;
       },
 
       async init() {
@@ -573,6 +743,9 @@ pub const HUD_INDEX_HTML: &str = r#"
         this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
         this.detDots = new THREE.Group(); this.three.scene.add(this.detDots);
         this.detMat = new THREE.LineBasicMaterial({color: CAMERA_GREEN, depthTest: true, depthWrite: false});
+
+        this.initLivePreview();
+        window.addEventListener('beforeunload', () => this.stopPreviewLoop());
 
         this.setLoading(85, 'Subscribing detections');
         try {
@@ -698,4 +871,5 @@ pub const HUD_INDEX_HTML: &str = r#"
 </body>
 
 </html>
+
 "#;
