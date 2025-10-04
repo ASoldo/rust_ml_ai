@@ -5,7 +5,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recon HUD — Map + MJPEG Frustum</title>
+  <title>Recon HUD</title>
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
