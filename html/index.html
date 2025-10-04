@@ -12,6 +12,10 @@
   </script>
 
   <style>
+    [x-cloak] {
+      display: none !important;
+    }
+
     html,
     body {
       height: 100%;
@@ -45,6 +49,17 @@
 </head>
 
 <body x-data="hud()" class="overflow-hidden">
+  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-sm" x-show="loading.active" x-transition.opacity>
+    <div class="w-full max-w-sm px-8 text-center space-y-4">
+      <div class="space-y-1">
+        <div class="text-sm font-semibold text-slate-100" x-text="loading.label"></div>
+        <div class="text-xs text-slate-400" x-text="`${loading.progress.toFixed(0)}%`"></div>
+      </div>
+      <div class="w-full h-2 rounded-full bg-slate-800/70 overflow-hidden">
+        <div class="h-full bg-emerald-400 transition-all duration-300" :style="`width: ${loading.progress}%;`"></div>
+      </div>
+    </div>
+  </div>
   <!-- HUD (pinned on top) -->
   <div class="pointer-events-none absolute top-0 left-0 w-full p-3 flex items-start gap-3 z-50">
     <!-- Single Recon Status card WITH Detections inside -->
@@ -56,8 +71,8 @@
             x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
         <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
             x-text="map.ready ? 'Ready' : 'Loading'"></span></div>
-        <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'"
-            x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
+      <div>Stream: <span :class="stream.ok ? 'text-emerald-400' : 'text-rose-400'"
+          x-text="stream.ok ? ('Receiving @ ' + stream.fps.toFixed(1) + ' fps') : 'Offline'"></span></div>
       </div>
 
       <!-- Optional controls -->
@@ -476,6 +491,8 @@
       geo: {ok: false, lat: 45.813, lon: 15.977},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
+      loading: {active: true, progress: 0, label: 'Initializing HUD...'},
+      loadingTimer: null,
       three: null, rig: null, mjpeg: null, frustumVisible: true,
 
       screen: null,
@@ -488,15 +505,49 @@
       uiDetections: [],
       sse: null,
 
+      setLoading(progress, label) {
+        if (typeof progress === 'number' && !Number.isNaN(progress)) {
+          this.loading.progress = Math.max(0, Math.min(100, progress));
+        }
+        if (label) this.loading.label = label;
+      },
+
+      finishLoading({delay = 300, label} = {}) {
+        if (!this.loading.active) return;
+        if (this.loadingTimer) {clearTimeout(this.loadingTimer); this.loadingTimer = null;}
+        const readyLabel = label ?? (this.stream.ok ? 'HUD Ready' : 'HUD Ready (stream offline)');
+        this.setLoading(100, readyLabel);
+        setTimeout(() => {this.loading.active = false;}, delay);
+      },
+
+      scheduleLoadingFallback(delay = 3500, label = 'HUD Ready (awaiting stream)') {
+        if (this.loadingTimer) clearTimeout(this.loadingTimer);
+        this.loadingTimer = setTimeout(() => {
+          if (!this.loading.active) return;
+          this.finishLoading({delay: 0, label});
+        }, delay);
+      },
+
       async init() {
+        this.setLoading(5, 'Booting renderer');
         this.three = bootScene({update: () => { }});
         this.three.camera.lookAt(0, 0, 0);
 
+        this.setLoading(20, 'Acquiring location');
         await this.acquireLocation();
+
+        this.setLoading(45, 'Loading map tiles');
         await this.loadMapPlane();
 
+        this.setLoading(60, 'Preparing video stream');
         this.mjpeg = new MJPEGTexture('http://127.0.0.1:8080/stream.mjpg');
-        this.mjpeg.start(s => {this.stream.ok = s.ok; this.stream.fps = s.fps;});
+        this.mjpeg.start(s => {
+          this.stream.ok = s.ok; this.stream.fps = s.fps;
+          if (s.ok && this.loading.active) {
+            this.setLoading(Math.max(this.loading.progress, 95), 'Video stream ready');
+            this.finishLoading();
+          }
+        });
 
         const feedW = 80, feedH = 60; this.feed = {w: feedW, h: feedH};
         const lift = feedH * 0.5;
@@ -507,6 +558,8 @@
         screen.position.set(0, 5 + lift, 0);
         this.three.scene.add(screen);
         this.screen = screen;
+
+        this.setLoading(75, 'Aligning frustum');
 
         this.setCameraYaw(this.cameraYaw);
 
@@ -520,11 +573,18 @@
         this.detDots = new THREE.Group(); this.three.scene.add(this.detDots);
         this.detMat = new THREE.LineBasicMaterial({color: CAMERA_GREEN, depthTest: true, depthWrite: false});
 
+        this.setLoading(85, 'Subscribing detections');
         try {
           this.sse = new EventSource('http://127.0.0.1:8080/stream_detections');
           this.sse.onmessage = (ev) => {if (!ev.data) return; try {this.handleDetections(JSON.parse(ev.data));} catch { } };
           this.sse.onerror = () => { };
         } catch { }
+        if (this.stream.ok) {
+          this.finishLoading();
+        } else {
+          this.setLoading(Math.max(this.loading.progress, 90), 'Waiting for video stream...');
+          this.scheduleLoadingFallback();
+        }
       },
 
       // score -> hex: 0(red) -> 0.5(yellow) -> 1(green)
@@ -623,7 +683,10 @@
           ground.rotation.x = -Math.PI / 2;
           if (this.map.mesh) {this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose();}
           this.three.scene.add(ground); this.map.mesh = ground; this.map.ready = true;
-        } catch {this.map.ready = false;}
+        } catch {
+          this.map.ready = false;
+          this.setLoading(this.loading.progress, 'Map tiles unavailable');
+        }
       },
 
       toggleFrustum() {this.frustumVisible = !this.frustumVisible; if (this.rig?.group) this.rig.group.visible = this.frustumVisible;},
