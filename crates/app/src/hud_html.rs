@@ -517,7 +517,7 @@ pub const HUD_INDEX_HTML: &str = r#"
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
       loadingTimer: null,
-      previewMode: 'overlay',
+      previewMode: 'original',
       preview: {canvas: null, ctx: null, prev: null, raf: null, threshold: 20, overlayAlpha: 0.6, buffers: {}, lastRender: 0},
       three: null, rig: null, mjpeg: null, frustumVisible: true,
 
