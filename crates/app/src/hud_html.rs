@@ -5,7 +5,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recon HUD</title>
+  <title>Recon HUD — Map + MJPEG Frustum</title>
   <script src="https://cdn.tailwindcss.com"></script>
 
   <script type="importmap">
@@ -193,7 +193,7 @@ pub const HUD_INDEX_HTML: &str = r#"
       return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({color, depthTest: true, depthWrite: false}));
     }
     function makeTextPlane(text, scale = 3, color = CAMERA_GREEN, bold = false) {
-      const cw = 256, ch = 128, c = document.createElement('canvas'); c.width = cw; c.height = ch; const ctx = c.getContext('2d');
+      const cw = 256, ch = 128, c = document.createElement('canvas'); c.width = cw; c.height = ch; const ctx = c.getContext('2d', {willReadFrequently: true});
       ctx.clearRect(0, 0, cw, ch);
       ctx.fillStyle = typeof color === 'number' ? hexToCss(color) : color;
       ctx.font = `${bold ? '700' : '600'} 72px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto`;
@@ -368,7 +368,7 @@ pub const HUD_INDEX_HTML: &str = r#"
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const {x: cx, y: cy} = latLonToTileXY(lat, lon, zoom); const tileSize = 256, grid = 3;
       const canvas = document.getElementById('tileCanvas'); canvas.width = tileSize * grid; canvas.height = tileSize * grid;
-      const ctx = canvas.getContext('2d'); let ok = 0; const loads = [];
+      const ctx = canvas.getContext('2d', {willReadFrequently: true}); let ok = 0; const loads = [];
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         const url = `https://tile.openstreetmap.org/${zoom}/${cx + dx}/${cy + dy}.png`;
         loads.push(new Promise(res => {
@@ -383,14 +383,14 @@ pub const HUD_INDEX_HTML: &str = r#"
     // ---------- MJPEG ----------
     class MJPEGTexture {
       constructor(url) {
-        this.url = url; this.canvas = document.createElement('canvas'); this.ctx = this.canvas.getContext('2d');
+        this.url = url; this.canvas = document.createElement('canvas'); this.ctx = this.canvas.getContext('2d', {willReadFrequently: true});
         this.texture = new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture);
         this.ok = false; this.fps = 0; this._frames = 0; this._last = performance.now(); this._w = 0; this._h = 0; this._consumers = new Set();
       }
       _setupTex(tex) {tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.flipY = true; tex.needsUpdate = true;}
       attach(material) {material.map = this.texture; material.needsUpdate = true; this._consumers.add(material);}
       _recreateTextureForSize(w, h) {
-        const c = document.createElement('canvas'); c.width = w; c.height = h; this.canvas = c; this.ctx = c.getContext('2d');
+        const c = document.createElement('canvas'); c.width = w; c.height = h; this.canvas = c; this.ctx = c.getContext('2d', {willReadFrequently: true});
         const old = this.texture; this.texture = new THREE.CanvasTexture(this.canvas); this._setupTex(this.texture); if (old) old.dispose();
         for (const m of this._consumers) {m.map = this.texture; m.needsUpdate = true;}
       }
