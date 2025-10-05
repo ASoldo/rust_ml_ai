@@ -410,7 +410,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
-    const MAP_CORRECTION_WORLD = {x: -7.116846561179651, z: -67.70737324889826};
+    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7};
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
@@ -598,7 +598,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: true, lat: 45.90364339776202, lon: 16.26352205869013},
+      geo: {ok: true, lat: 45.81320316151337, lon: 15.977304294939904},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
