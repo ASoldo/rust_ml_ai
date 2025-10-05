@@ -16,7 +16,14 @@ Out of the box the workspace demonstrates:
 
 ## Container quickstart
 
-Ensure Docker 24+ and the NVIDIA Container Toolkit are installed. The image exposes CUDA, LibTorch, OpenCV, and the webcam entrypoints used in this workspace.
+Before building, make sure:
+
+- Docker 24+ is installed and the NVIDIA Container Toolkit is configured (`sudo nvidia-ctk runtime configure --runtime=docker` then restart Docker).
+- `docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi` succeeds so the runtime can see your GPU.
+- The camera you want to use is exposed (default `/dev/video0`; adjust compose if you have a different device path).
+- TorchScript weights live under `models/` (e.g. `models/yolov12n-face.torchscript`); datasets and checkpoints are never committed, so populate them locally.
+
+The Docker build bakes in CUDA 13.0.1, LibTorch 2.8.0+cu129, OpenCV, FFmpeg codec libs and V4L2 tools. Override `CUDA_BASE` or `LIBTORCH_URL` if you need a different toolkit/libtorch pairing.
 
 ### Build
 
@@ -29,7 +36,7 @@ docker build -t cuda-cpp-dojo .
 Need a different LibTorch build? Pass `--build-arg LIBTORCH_URL=...` to either command. The Dockerfile defaults to 2.8.0+cu129 (CUDA 13).
 Set `CUDA_BASE` if you want a different CUDA image tag (e.g. `--build-arg CUDA_BASE=12.9.0-devel-ubuntu22.04`).
 
-### Run the default demo
+### One-off runs
 
 ```bash
 docker run --rm -it --gpus all \
@@ -40,23 +47,19 @@ docker run --rm -it --gpus all \
   cuda-cpp-dojo:latest
 ```
 
-The container ships with the `with-tch` feature baked in, so commands that need TorchScript just work. `data` and `models` are mounted for sharing datasets and checkpoints.
+This launches the default vector-add demo. The image ships with the `with-tch` feature already enabled so TorchScript paths work out of the box.
 
-### Compose workflow
-
-```bash
-docker compose up
-```
-
-Override the command to run helper modes, e.g.
+### Vision demo (web preview)
 
 ```bash
-docker compose run --rm cuda-app vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
-# or keep it running via
 docker compose up vision-demo
+# or run ad-hoc with ports exposed
+
+docker compose run --rm --service-ports cuda-app \
+  vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
 ```
 
-Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Override the service command in `docker-compose.yml` if you need different defaults.
+Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
 
 ## Prerequisites
 
