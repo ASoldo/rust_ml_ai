@@ -13,6 +13,37 @@ pub const HUD_INDEX_HTML: &str = r#"
   </script>
 
   <style>
+    @font-face {
+      font-family: 'NerdFont';
+      src: url('https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@3.2.1/patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFont-Regular.ttf') format('truetype');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    .nf {
+      font-family: 'NerdFont', 'Symbols Nerd Font', 'Segoe UI Symbol', sans-serif;
+      font-size: 0.85rem;
+      line-height: 1;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(0, auto);
+      column-gap: 0.6rem;
+      row-gap: 0.25rem;
+      align-items: center;
+    }
+
+    .metric-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
     [x-cloak] {
       display: none !important;
     }
@@ -140,11 +171,26 @@ pub const HUD_INDEX_HTML: &str = r#"
                   <div>
                     <div class="flex gap-2 items-baseline">
                       <span class="font-medium" x-text="d.label"></span>
-                      <span class="text-xs text-slate-400">score <span x-text="d.score.toFixed(2)"></span></span>
                     </div>
-                    <div class="text-xs text-slate-400">
-                      center <span x-text="d.u.toFixed(2)"></span>, <span x-text="d.v.toFixed(2)"></span>
-                      · box <span x-text="`${d.w|0}×${d.h|0}`"></span>
+                    <div class="text-xs text-slate-400 metric-row">
+                      <span class="metric-chip">
+                        <span class="nf">󰋱</span>
+                        <span><span x-text="d.u.toFixed(2)"></span>×<span x-text="d.v.toFixed(2)"></span></span>
+                      </span>
+                      <span class="metric-chip">
+                        <span class="nf">󰀁</span>
+                        <span x-text="`${d.w|0}×${d.h|0}`"></span>
+                      </span>
+                      <span class="metric-chip">
+                        <span class="nf">󰆋</span>
+                        <span x-text="d.azLabel"></span>
+                        <span>·</span>
+                        <span x-text="d.azDeg.toFixed(0) + '°'"></span>
+                      </span>
+                      <span class="metric-chip">
+                        <span class="nf">󰄨</span>
+                        <span x-text="d.score.toFixed(2)"></span>
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -870,12 +916,39 @@ pub const HUD_INDEX_HTML: &str = r#"
           else if ('w' in bb || 'width' in bb) {wPx = Math.abs(bb.w ?? bb.width ?? 0); hPx = Math.abs(bb.h ?? bb.height ?? 0);}
 
           const score = det.score ?? 0;
+          let azDeg = 0, azLabel = 'N';
+          if (this.rig?.origin) {
+            const dx = hit.x - this.rig.origin.x;
+            const dz = hit.z - this.rig.origin.z;
+            const angRad = Math.atan2(dx, dz); // +Z is north
+            azDeg = THREE.MathUtils.radToDeg(angRad);
+            if (azDeg < 0) azDeg += 360;
+            const dirs = [
+              {label: 'N', deg: 0},
+              {label: 'NE', deg: 45},
+              {label: 'E', deg: 90},
+              {label: 'SE', deg: 135},
+              {label: 'S', deg: 180},
+              {label: 'SW', deg: 225},
+              {label: 'W', deg: 270},
+              {label: 'NW', deg: 315}
+            ];
+            let best = dirs[0], bestDiff = 360;
+            for (const dir of dirs) {
+              let diff = Math.abs(dir.deg - azDeg);
+              if (diff > 180) diff = 360 - diff;
+              if (diff < bestDiff) {bestDiff = diff; best = dir;}
+            }
+            azLabel = best.label;
+          }
           ui.push({
             key: `${u.toFixed(3)}:${v.toFixed(3)}:${score.toFixed(2)}`,
             label: det.class ?? det.label ?? 'FACE',
             score,
             u, v, w: wPx, h: hPx,
-            hex: this.scoreToHex(score)
+            hex: this.scoreToHex(score),
+            azDeg,
+            azLabel
           });
         }
 
