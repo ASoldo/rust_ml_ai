@@ -1,4 +1,4 @@
-<img width="1251" height="656" alt="image" src="https://github.com/user-attachments/assets/27ad2543-2dc0-475d-a929-bc074611ffd2" />
+<img width="946" height="942" alt="image" src="https://github.com/user-attachments/assets/baefadf4-1690-407c-b34d-23f9de40ff2f" />
 
 # CUDA C++ Dojo
 
