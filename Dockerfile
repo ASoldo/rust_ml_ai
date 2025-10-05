@@ -36,7 +36,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 
 ENV PATH=/root/.cargo/bin:${PATH}
 
-# ARG LIBTORCH_URL=https://download.pytorch.org/libtorch/cu129/libtorch-cxx11-abi-shared-with-deps-2.8.0%2Bcu129.zip
 ARG LIBTORCH_URL=https://download.pytorch.org/libtorch/cu129/libtorch-shared-with-deps-2.8.0%2Bcu129.zip
 RUN curl -L "${LIBTORCH_URL}" -o /tmp/libtorch.zip && \
     unzip /tmp/libtorch.zip -d /opt && \
