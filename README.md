@@ -51,15 +51,32 @@ This launches the default vector-add demo. The image ships with the `with-tch` f
 
 ### Vision demo (web preview)
 
-```bash
-docker compose up vision-demo
-# or run ad-hoc with ports exposed
+1. Build (or rebuild after code changes):
+   ```bash
+   docker compose build
+   ```
 
-docker compose run --rm --service-ports cuda-app \
-  vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
-```
+2. Launch the detector with ports published:
+   ```bash
+   docker compose up vision-demo
+   ```
+
+3. For ad-hoc runs with custom flags use:
+   ```bash
+   docker compose run --rm --service-ports cuda-app \
+     vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640
+   ```
 
 Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
+
+### Compose services
+
+| Service | Command executed in container | Purpose |
+|---------|---------------------------------|---------|
+| `cuda-app` | `cuda-app` | Vector add demo / sanity check |
+| `vision-demo` | `cuda-app vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640` | TorchScript + webcam HUD |
+
+Run them with `docker compose up <service>` or `docker compose run --rm <service> [...]`.
 
 ## Prerequisites
 
