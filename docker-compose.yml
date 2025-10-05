@@ -1,0 +1,37 @@
+x-cuda-app-base: &cuda-app-base
+  build:
+    context: .
+    target: runtime
+    args:
+      CUDA_BASE: ${CUDA_BASE:-13.0.1-devel-ubuntu22.04}
+      LIBTORCH_URL: ${LIBTORCH_URL:-https://download.pytorch.org/libtorch/cu129/libtorch-shared-with-deps-2.8.0%2Bcu129.zip}
+  image: cuda-cpp-dojo:latest
+  restart: "no"
+  gpus: all
+  devices:
+    - /dev/video0:/dev/video0
+  environment:
+    - RUST_LOG=info
+  volumes:
+    - ./data:/app/data
+    - ./models:/app/models
+  ports:
+    - "8080:8080"
+  shm_size: "2gb"
+  stdin_open: true
+  tty: true
+
+services:
+  cuda-app:
+    <<: *cuda-app-base
+    container_name: cuda-cpp-dojo
+
+  vision-demo:
+    <<: *cuda-app-base
+    container_name: cuda-cpp-dojo-vision
+    command:
+      - vision-demo
+      - /dev/video0
+      - models/yolov12n-face.torchscript
+      - "640"
+      - "640"

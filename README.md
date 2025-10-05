@@ -14,6 +14,50 @@ Out of the box the workspace demonstrates:
 - launching the kernel via `cudarc` and copying results back to the host
 - printing the host/GPU vectors from the `cuda-app` entry-point
 
+## Container quickstart
+
+Ensure Docker 24+ and the NVIDIA Container Toolkit are installed. The image exposes CUDA, LibTorch, OpenCV, and the webcam entrypoints used in this workspace.
+
+### Build
+
+```bash
+docker compose build
+# or
+docker build -t cuda-cpp-dojo .
+```
+
+Need a different LibTorch build? Pass `--build-arg LIBTORCH_URL=...` to either command. The Dockerfile defaults to 2.8.0+cu129 (CUDA 13).
+Set `CUDA_BASE` if you want a different CUDA image tag (e.g. `--build-arg CUDA_BASE=12.9.0-devel-ubuntu22.04`).
+
+### Run the default demo
+
+```bash
+docker run --rm -it --gpus all \
+  --device /dev/video0:/dev/video0 \
+  -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/models:/app/models \
+  cuda-cpp-dojo:latest
+```
+
+The container ships with the `with-tch` feature baked in, so commands that need TorchScript just work. `data` and `models` are mounted for sharing datasets and checkpoints.
+
+### Compose workflow
+
+```bash
+docker compose up
+```
+
+Override the command to run helper modes, e.g.
+
+```bash
+docker compose run --rm cuda-app vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
+# or keep it running via
+docker compose up vision-demo
+```
+
+Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Override the service command in `docker-compose.yml` if you need different defaults.
+
 ## Prerequisites
 
 - NVIDIA GPU with a compatible driver installed

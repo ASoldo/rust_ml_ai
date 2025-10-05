@@ -1,0 +1,11 @@
+.git
+.gitignore
+**/*.rs.bk
+target
+Video_Codec_Interface_13.0.19
+screenshots
+*.log
+*.pt
+*.ot
+venv
+__pycache__
