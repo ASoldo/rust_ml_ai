@@ -80,7 +80,8 @@
 </head>
 
 <body x-data="hud()" class="overflow-hidden">
-  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-sm" x-show="loading.active" x-transition.opacity>
+  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-sm"
+    x-show="loading.active" x-transition.opacity>
     <div class="w-full max-w-sm px-8 text-center space-y-4">
       <div class="space-y-1">
         <div class="text-sm font-semibold text-slate-100" x-text="loading.label"></div>
@@ -139,7 +140,8 @@
             <span>Recon Status</span>
             <span x-text="sections.status ? '−' : '+'"></span>
           </button>
-          <div x-show="sections.status" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-0.5">
+          <div x-show="sections.status" x-transition x-cloak
+            class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-0.5">
             <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
                 x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
             <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
@@ -155,7 +157,8 @@
             <span>Detections</span>
             <span x-text="sections.detections ? '−' : '+'"></span>
           </button>
-          <div x-show="sections.detections" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-1">
+          <div x-show="sections.detections" x-transition x-cloak
+            class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-1">
             <div class="text-slate-300">
               Count: <span class="text-slate-100 font-semibold" x-text="uiDetections.length"></span>
             </div>
@@ -409,11 +412,11 @@
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
-    const MAP_CORRECTION_WORLD = {x: -7.116846561179651, z: -67.70737324889826};
+    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7};
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
-      const tyFloat =  (0.5 - Math.log((1 + Math.sin(d2r(lat))) / (1 - Math.sin(d2r(lat)))) / (4 * Math.PI)) * Math.pow(2, zoom);
+      const tyFloat = (0.5 - Math.log((1 + Math.sin(d2r(lat))) / (1 - Math.sin(d2r(lat)))) / (4 * Math.PI)) * Math.pow(2, zoom);
       const cx = Math.floor(txFloat), cy = Math.floor(tyFloat);
       const fx = txFloat - cx, fy = tyFloat - cy;
       const tileSize = 256, grid = 3;
@@ -597,7 +600,7 @@
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: true, lat: 45.90364339776202, lon: 16.26352205869013},
+      geo: {ok: true, lat: 45.81320316151337, lon: 15.977304294939904},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
@@ -1035,19 +1038,19 @@
           if (this.map.mesh) {this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose();}
           this.three.scene.add(ground); this.map.mesh = ground; this.map.ready = true;
           const centerPx = latLonToGlobalPixels(this.geo.lat, this.geo.lon, this.map.zoom);
-      const pxToWorldX = planeSize / patch.width;
-      const pxToWorldZ = (planeSize * aspect) / patch.height;
-      this.map.transform = {
-        centerPx,
-        pxToWorldX,
-        pxToWorldZ,
-        correction: MAP_CORRECTION_WORLD
-      };
-      const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
-      ground.position.set(-anchor.x, 0, -anchor.z);
-    } catch {
-      this.map.ready = false;
-      this.setLoading(this.loading.progress, 'Map tiles unavailable');
+          const pxToWorldX = planeSize / patch.width;
+          const pxToWorldZ = (planeSize * aspect) / patch.height;
+          this.map.transform = {
+            centerPx,
+            pxToWorldX,
+            pxToWorldZ,
+            correction: MAP_CORRECTION_WORLD
+          };
+          const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
+          ground.position.set(-anchor.x, 0, -anchor.z);
+        } catch {
+          this.map.ready = false;
+          this.setLoading(this.loading.progress, 'Map tiles unavailable');
         }
       },
 

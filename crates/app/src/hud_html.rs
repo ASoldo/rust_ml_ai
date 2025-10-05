@@ -1060,5 +1060,4 @@ pub const HUD_INDEX_HTML: &str = r#"
 </body>
 
 </html>
-
 "#;
