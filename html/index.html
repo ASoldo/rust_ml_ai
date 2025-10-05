@@ -956,7 +956,7 @@
             const dx = hit.x - this.rig.origin.x;
             const dz = hit.z - this.rig.origin.z;
             const angRad = Math.atan2(dx, dz); // +Z is north
-            azDeg = THREE.MathUtils.radToDeg(angRad);
+            azDeg = (540 - THREE.MathUtils.radToDeg(angRad)) % 360;
             if (azDeg < 0) azDeg += 360;
             const dirs = [
               {label: 'N', deg: 0},

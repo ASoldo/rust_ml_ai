@@ -410,7 +410,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
-    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7};
+    const MAP_CORRECTION_WORLD = {x: -7.116846561179651, z: -67.70737324889826};
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
@@ -598,7 +598,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: true, lat: 45.81319942251461, lon: 15.97730697714888},
+      geo: {ok: true, lat: 45.90364339776202, lon: 16.26352205869013},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
@@ -957,7 +957,7 @@ pub const HUD_INDEX_HTML: &str = r#"
             const dx = hit.x - this.rig.origin.x;
             const dz = hit.z - this.rig.origin.z;
             const angRad = Math.atan2(dx, dz); // +Z is north
-            azDeg = THREE.MathUtils.radToDeg(angRad);
+            azDeg = (540 - THREE.MathUtils.radToDeg(angRad)) % 360;
             if (azDeg < 0) azDeg += 360;
             const dirs = [
               {label: 'N', deg: 0},
