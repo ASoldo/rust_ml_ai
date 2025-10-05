@@ -409,11 +409,23 @@
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
+    const MAP_CORRECTION_SOURCE = {lat: 45.903643408756864, lon: 16.263500563758583};
+    const MAP_CORRECTION_TARGET = {lat: 45.904419840130586, lon: 16.263650804760285};
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
-      const {x: cx, y: cy} = latLonToTileXY(lat, lon, zoom); const tileSize = 256, grid = 3;
+      const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
+      const tyFloat =  (0.5 - Math.log((1 + Math.sin(d2r(lat))) / (1 - Math.sin(d2r(lat)))) / (4 * Math.PI)) * Math.pow(2, zoom);
+      const cx = Math.floor(txFloat), cy = Math.floor(tyFloat);
+      const fx = txFloat - cx, fy = tyFloat - cy;
+      const tileSize = 256, grid = 3;
       const canvas = document.getElementById('tileCanvas'); canvas.width = tileSize * grid; canvas.height = tileSize * grid;
       const ctx = canvas.getContext('2d', {willReadFrequently: true}); let ok = 0; const loads = [];
+      const shiftX = (canvas.width * 0.5) - ((1 + fx) * tileSize);
+      const shiftY = (canvas.height * 0.5) - ((1 + fy) * tileSize);
+      ctx.save();
+      ctx.fillStyle = '#0b0f14';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.translate(shiftX, shiftY);
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         const url = `https://tile.openstreetmap.org/${zoom}/${cx + dx}/${cy + dy}.png`;
         loads.push(new Promise(res => {
@@ -422,7 +434,18 @@
           img.onerror = () => res(); img.src = url;
         }));
       }
-      await Promise.all(loads); if (!ok) throw new Error('No tiles loaded'); return canvas;
+      await Promise.all(loads);
+      ctx.restore();
+      if (!ok) throw new Error('No tiles loaded');
+      return canvas;
+    }
+
+    function latLonToGlobalPixels(lat, lon, zoom) {
+      const scale = 256 * Math.pow(2, zoom);
+      const x = ((lon + 180) / 360) * scale;
+      const sinLat = Math.sin(d2r(lat));
+      const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+      return {x, y};
     }
 
     // ---------- MJPEG ----------
@@ -575,7 +598,7 @@
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: false, lat: 45.813, lon: 15.977},
+      geo: {ok: true, lat: 45.90364339776202, lon: 16.26352205869013},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
@@ -601,6 +624,23 @@
           this.loading.progress = Math.max(0, Math.min(100, progress));
         }
         if (label) this.loading.label = label;
+      },
+
+      latLonToWorld(lat, lon) {
+        const transform = this.map.transform;
+        if (!transform) return {x: 0, z: 0};
+        const px = latLonToGlobalPixels(lat, lon, this.map.zoom ?? 16);
+        const dxPx = px.x - transform.centerPx.x;
+        const dzPx = px.y - transform.centerPx.y;
+        const base = {
+          x: dxPx * transform.pxToWorldX,
+          z: -dzPx * transform.pxToWorldZ
+        };
+        if (transform.correction) {
+          base.x += transform.correction.x;
+          base.z += transform.correction.z;
+        }
+        return base;
       },
 
       finishLoading({delay = 300, label} = {}) {
@@ -833,7 +873,9 @@
         const screenMat = new THREE.MeshBasicMaterial({side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false});
         this.mjpeg.attach(screenMat);
         const screen = new THREE.Mesh(screenGeom, screenMat);
-        screen.position.set(0, 5 + lift, 0);
+        const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
+        const mapOffset = this.map.mesh?.position ?? {x: 0, z: 0};
+        screen.position.set(anchor.x + mapOffset.x, 5 + lift, anchor.z + mapOffset.z);
         this.three.scene.add(screen);
         this.screen = screen;
 
@@ -972,14 +1014,21 @@
 
       async acquireLocation() {
         const params = new URLSearchParams(location.search);
-        if (params.get('lat') && params.get('lon')) {this.geo.ok = true; this.geo.lat = parseFloat(params.get('lat')); this.geo.lon = parseFloat(params.get('lon')); return;}
-        const p = new Promise(resolve => {
-          if (!('geolocation' in navigator)) return resolve(false);
-          navigator.geolocation.getCurrentPosition(
-            pos => {this.geo.ok = true; this.geo.lat = pos.coords.latitude; this.geo.lon = pos.coords.longitude; resolve(true);},
-            () => resolve(false), {enableHighAccuracy: true, timeout: 5000, maximumAge: 30000}
-          );
-        }); await p;
+        if (params.get('lat') && params.get('lon')) {
+          this.geo.lat = parseFloat(params.get('lat'));
+          this.geo.lon = parseFloat(params.get('lon'));
+          this.geo.ok = true;
+          return;
+        }
+        if (!this.geo.ok) {
+          const p = new Promise(resolve => {
+            if (!('geolocation' in navigator)) return resolve(false);
+            navigator.geolocation.getCurrentPosition(
+              pos => {this.geo.ok = true; this.geo.lat = pos.coords.latitude; this.geo.lon = pos.coords.longitude; resolve(true);},
+              () => resolve(false), {enableHighAccuracy: true, timeout: 5000, maximumAge: 30000}
+            );
+          }); await p;
+        }
       },
 
       async loadMapPlane() {
@@ -991,9 +1040,24 @@
           ground.rotation.x = -Math.PI / 2;
           if (this.map.mesh) {this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose();}
           this.three.scene.add(ground); this.map.mesh = ground; this.map.ready = true;
-        } catch {
-          this.map.ready = false;
-          this.setLoading(this.loading.progress, 'Map tiles unavailable');
+          const centerPx = latLonToGlobalPixels(this.geo.lat, this.geo.lon, this.map.zoom);
+      const pxToWorldX = planeSize / patch.width;
+      const pxToWorldZ = (planeSize * aspect) / patch.height;
+      const srcPx = latLonToGlobalPixels(MAP_CORRECTION_SOURCE.lat, MAP_CORRECTION_SOURCE.lon, this.map.zoom);
+      const dstPx = latLonToGlobalPixels(MAP_CORRECTION_TARGET.lat, MAP_CORRECTION_TARGET.lon, this.map.zoom);
+      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX;
+      const correctionZ = -(srcPx.y - dstPx.y) * pxToWorldZ;
+      this.map.transform = {
+        centerPx,
+        pxToWorldX,
+        pxToWorldZ,
+        correction: {x: correctionX, z: correctionZ}
+      };
+      const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
+      ground.position.set(-anchor.x, 0, -anchor.z);
+    } catch {
+      this.map.ready = false;
+      this.setLoading(this.loading.progress, 'Map tiles unavailable');
         }
       },
 
