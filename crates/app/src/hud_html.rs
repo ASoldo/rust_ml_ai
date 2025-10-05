@@ -410,8 +410,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
-    const MAP_CORRECTION_SOURCE = {lat: 45.903643408756864, lon: 16.263500563758583};
-    const MAP_CORRECTION_TARGET = {lat: 45.904419840130586, lon: 16.263650804760285};
+    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7};
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
@@ -599,7 +598,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: true, lat: 45.8132069005119, lon: 15.977309659357859},
+      geo: {ok: true, lat: 45.81319942251461, lon: 15.97730697714888},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
@@ -633,15 +632,10 @@ pub const HUD_INDEX_HTML: &str = r#"
         const px = latLonToGlobalPixels(lat, lon, this.map.zoom ?? 16);
         const dxPx = px.x - transform.centerPx.x;
         const dzPx = px.y - transform.centerPx.y;
-        const base = {
-          x: dxPx * transform.pxToWorldX,
-          z: -dzPx * transform.pxToWorldZ
+        return {
+          x: dxPx * transform.pxToWorldX + (transform.correction?.x ?? 0),
+          z: -dzPx * transform.pxToWorldZ + (transform.correction?.z ?? 0)
         };
-        if (transform.correction) {
-          base.x += transform.correction.x;
-          base.z += transform.correction.z;
-        }
-        return base;
       },
 
       finishLoading({delay = 300, label} = {}) {
@@ -1044,15 +1038,11 @@ pub const HUD_INDEX_HTML: &str = r#"
           const centerPx = latLonToGlobalPixels(this.geo.lat, this.geo.lon, this.map.zoom);
       const pxToWorldX = planeSize / patch.width;
       const pxToWorldZ = (planeSize * aspect) / patch.height;
-      const srcPx = latLonToGlobalPixels(MAP_CORRECTION_SOURCE.lat, MAP_CORRECTION_SOURCE.lon, this.map.zoom);
-      const dstPx = latLonToGlobalPixels(MAP_CORRECTION_TARGET.lat, MAP_CORRECTION_TARGET.lon, this.map.zoom);
-      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX + 8;
-      const correctionZ = -(srcPx.y - dstPx.y) * pxToWorldZ + 5;
       this.map.transform = {
         centerPx,
         pxToWorldX,
         pxToWorldZ,
-        correction: {x: correctionX, z: correctionZ}
+        correction: MAP_CORRECTION_WORLD
       };
       const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
       ground.position.set(-anchor.x, 0, -anchor.z);
