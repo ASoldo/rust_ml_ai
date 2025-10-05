@@ -1045,7 +1045,7 @@
       const pxToWorldZ = (planeSize * aspect) / patch.height;
       const srcPx = latLonToGlobalPixels(MAP_CORRECTION_SOURCE.lat, MAP_CORRECTION_SOURCE.lon, this.map.zoom);
       const dstPx = latLonToGlobalPixels(MAP_CORRECTION_TARGET.lat, MAP_CORRECTION_TARGET.lon, this.map.zoom);
-      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX;
+      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX + 2;
       const correctionZ = -(srcPx.y - dstPx.y) * pxToWorldZ;
       this.map.transform = {
         centerPx,

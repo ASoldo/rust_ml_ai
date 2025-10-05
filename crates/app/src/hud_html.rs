@@ -599,7 +599,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- Alpine app ----------
     window.hud = () => ({
-      geo: {ok: true, lat: 45.81314327147066, lon: 15.977299018571323},
+      geo: {ok: true, lat: 45.8132069005119, lon: 15.977309659357859},
       map: {ready: false, mesh: null, zoom: 16},
       stream: {ok: false, fps: 0},
       loading: {active: true, progress: 0, label: 'Initializing HUD...'},
@@ -1046,8 +1046,8 @@ pub const HUD_INDEX_HTML: &str = r#"
       const pxToWorldZ = (planeSize * aspect) / patch.height;
       const srcPx = latLonToGlobalPixels(MAP_CORRECTION_SOURCE.lat, MAP_CORRECTION_SOURCE.lon, this.map.zoom);
       const dstPx = latLonToGlobalPixels(MAP_CORRECTION_TARGET.lat, MAP_CORRECTION_TARGET.lon, this.map.zoom);
-      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX;
-      const correctionZ = -(srcPx.y - dstPx.y) * pxToWorldZ;
+      const correctionX = (srcPx.x - dstPx.x) * pxToWorldX + 8;
+      const correctionZ = -(srcPx.y - dstPx.y) * pxToWorldZ + 5;
       this.map.transform = {
         centerPx,
         pxToWorldX,
