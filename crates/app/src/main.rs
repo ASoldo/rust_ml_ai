@@ -46,7 +46,13 @@ use serde_json::to_string;
 const ELEMENT_COUNT: usize = 16;
 
 #[cfg(feature = "with-tch")]
+mod atak;
+
+#[cfg(feature = "with-tch")]
 mod hud_html;
+
+#[cfg(feature = "with-tch")]
+use atak::HUD_ATAK_HTML;
 
 #[cfg(feature = "with-tch")]
 use hud_html::HUD_INDEX_HTML;
@@ -504,6 +510,7 @@ fn spawn_preview_server(shared: SharedFrame) -> std::io::Result<()> {
                     .app_data(web::Data::new(ServerState {
                         latest: server_shared.clone(),
                     }))
+                    .route("/atak", web::get().to(atak_route))
                     .route("/", web::get().to(index_route))
                     .route("/frame.jpg", web::get().to(frame_handler))
                     .route("/stream.mjpg", web::get().to(stream_handler))
@@ -575,6 +582,13 @@ async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(HUD_INDEX_HTML)
+}
+
+#[cfg(feature = "with-tch")]
+async fn atak_route() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(HUD_ATAK_HTML)
 }
 
 #[cfg(feature = "with-tch")]
