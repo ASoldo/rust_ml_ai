@@ -569,7 +569,7 @@ pub const HUD_INDEX_HTML: &str = r#"
         requestAnimationFrame(tick);
       })();
 
-      return {scene, camera};
+      return {scene, camera, renderer, controls};
     }
 
     // ---------- Frustum fitted to the live-feed plane ----------
@@ -620,12 +620,17 @@ pub const HUD_INDEX_HTML: &str = r#"
       sections: {preview: true, status: true, detections: true},
       previewMode: 'original',
       preview: {canvas: null, ctx: null, prev: null, raf: null, threshold: 20, overlayAlpha: 0.6, buffers: {}, lastRender: 0},
-      three: null, rig: null, mjpeg: null, frustumVisible: true,
+      three: null, mjpeg: null, frustumVisible: true,
 
+      cameras: [],
+      activeCameraId: null,
       screen: null,
+      rig: null,
       feed: {w: 80, h: 60},
       cameraYaw: 0.0,
-      demoRigs: [],
+      raycaster: null,
+      pointer: null,
+      azimuth: null,
 
       detLines: null,      // line group
       detDots: null,       // dot group
@@ -877,36 +882,14 @@ pub const HUD_INDEX_HTML: &str = r#"
         });
 
         const feedW = 80, feedH = 60; this.feed = {w: feedW, h: feedH};
-        const lift = feedH * 0.5;
-        const screenGeom = new THREE.PlaneGeometry(feedW, feedH);
-        const screenMat = new THREE.MeshBasicMaterial({
-          side: THREE.DoubleSide,
-          depthTest: true,
-          depthWrite: true,
-          toneMapped: false
-        });
-        this.mjpeg.attach(screenMat);
-        const screen = new THREE.Mesh(screenGeom, screenMat);
-        const rigOffset = MAP_CORRECTION_WORLD;
-        const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
-        screen.position.set(
-          anchor.x + (rigOffset?.x ?? 0),
-          5 + lift,
-          anchor.z + (rigOffset?.z ?? 0)
-        );
-        this.three.scene.add(screen);
-        this.screen = screen;
+        this.raycaster = new THREE.Raycaster();
+        this.pointer = new THREE.Vector2();
+        this.three.renderer.domElement.addEventListener('pointerdown', e => this.handlePointerDown(e));
+        this.rebuildCameras();
 
         this.setLoading(75, 'Aligning frustum');
 
         this.setCameraYaw(this.cameraYaw);
-
-        this.rig = makeRigForScreen(this.three.scene, screen, {fovDeg: 50, far: 35, color: CAMERA_ORANGE});
-        this.rig.group.visible = this.frustumVisible;
-
-        this.azimuth = makeAzimuthDial({scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z), radius: 90, y: 2});
-        this.updateCameraBearingSphere();
-        this.spawnDemoCameras();
 
         this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
         this.detDots = new THREE.Group(); this.three.scene.add(this.detDots);
@@ -938,7 +921,10 @@ pub const HUD_INDEX_HTML: &str = r#"
       },
 
       handleDetections(msg) {
-        if (!this.screen || !this.rig) return;
+        const active = this.getActiveCamera();
+        if (!active?.screen || !active?.rig) return;
+        const screen = active.screen;
+        const rig = active.rig;
 
         const imgW = msg.width ?? msg.image_width ?? this.mjpeg?._w ?? 1;
         const imgH = msg.height ?? msg.image_height ?? this.mjpeg?._h ?? 1;
@@ -956,10 +942,10 @@ pub const HUD_INDEX_HTML: &str = r#"
         for (const det of boxes) {
           const bb = det.bbox ?? det;
           const [u, v] = bboxToCenterUV(bb, imgW, imgH);
-          const hit = uvToWorldOnScreen(this.screen, this.feed.w, this.feed.h, u, v);
+          const hit = uvToWorldOnScreen(screen, this.feed.w, this.feed.h, u, v);
 
           // Stable line
-          const lineGeo = new THREE.BufferGeometry().setFromPoints([this.rig.origin.clone(), hit]);
+          const lineGeo = new THREE.BufferGeometry().setFromPoints([rig.origin.clone(), hit]);
           this.detLines.add(new THREE.Line(lineGeo, this.detMat));
 
           // Score-colored dot
@@ -977,9 +963,9 @@ pub const HUD_INDEX_HTML: &str = r#"
 
           const score = det.score ?? 0;
           let azDeg = 0, azLabel = 'N';
-          if (this.rig?.origin) {
-            const dx = hit.x - this.rig.origin.x;
-            const dz = hit.z - this.rig.origin.z;
+          if (rig?.origin) {
+            const dx = hit.x - rig.origin.x;
+            const dz = hit.z - rig.origin.z;
             const angRad = Math.atan2(dx, dz); // +Z is north
             azDeg = (540 - THREE.MathUtils.radToDeg(angRad)) % 360;
             if (azDeg < 0) azDeg += 360;
@@ -1019,57 +1005,168 @@ pub const HUD_INDEX_HTML: &str = r#"
 
       setCameraYaw(yawRad) {
         this.cameraYaw = yawRad;
-        if (this.screen) {
-          this.screen.rotation.set(0, this.cameraYaw + CAMERA_YAW_OFFSET, 0);
+        const active = this.getActiveCamera();
+        if (active?.screen) {
+          active.yawDeg = THREE.MathUtils.radToDeg(yawRad);
+          active.screen.rotation.set(0, yawRad + CAMERA_YAW_OFFSET, 0);
         }
         this.updateCameraBearingSphere();
       },
 
       updateCameraBearingSphere() {
-        if (!this.azimuth?.setCameraBearingFromPoint || !this.screen) return;
-        this.screen.getWorldPosition(TMP_CENTER);
+        if (!this.azimuth?.setCameraBearingFromPoint) return;
+        const active = this.getActiveCamera();
+        if (!active?.screen) return;
+        active.screen.getWorldPosition(TMP_CENTER);
         this.azimuth.setCameraBearingFromPoint(TMP_CENTER);
       },
 
-      spawnDemoCameras() {
-        if (!this.three?.scene || !this.map?.transform || !this.mjpeg) return;
-        for (const entry of this.demoRigs) {
-          entry.screen?.geometry?.dispose?.();
-          entry.screen?.material?.dispose?.();
-          if (entry.screen) this.three.scene.remove(entry.screen);
-          if (entry.rig?.group) this.three.scene.remove(entry.rig.group);
+      destroyAzimuth() {
+        if (!this.azimuth?.group) {this.azimuth = null; return;}
+        if (this.three?.scene) this.three.scene.remove(this.azimuth.group);
+        this.azimuth.group.traverse(obj => {
+          obj.geometry?.dispose?.();
+          if (obj.material && obj.material.isMaterial) obj.material.dispose();
+        });
+        this.azimuth = null;
+      },
+
+      disposeCameraEntry(entry) {
+        if (!entry) return;
+        if (entry.screen) {
+          this.three?.scene?.remove(entry.screen);
+          entry.screen.geometry?.dispose?.();
+          entry.screen.material?.dispose?.();
         }
-        this.demoRigs = [];
-        const configs = [
-          {lat: 45.81331561028888, lon: 15.96973422476513, color: 0x38bdf8},
-          {lat: 45.81635188042051, lon: 15.985263623730928, color: 0xf97316}
-        ];
+        if (entry.rig?.group) {
+          this.three?.scene?.remove(entry.rig.group);
+          entry.rig.group.traverse(obj => {
+            obj.geometry?.dispose?.();
+            if (obj.material && obj.material.isMaterial) obj.material.dispose();
+          });
+        }
+        if (entry.sphere) {
+          this.three?.scene?.remove(entry.sphere);
+          entry.sphere.geometry?.dispose?.();
+          entry.sphere.material?.dispose?.();
+        }
+      },
+
+      createCameraEntry(cfg, index = 0) {
+        if (!this.three?.scene || !this.mjpeg) return null;
         const rigOffset = MAP_CORRECTION_WORLD;
         const lift = this.feed.h * 0.5;
-        configs.forEach((cfg, idx) => {
-          const mat = new THREE.MeshBasicMaterial({
-            side: THREE.DoubleSide,
-            depthTest: true,
-            depthWrite: true,
-            toneMapped: false
-          });
-          this.mjpeg.attach(mat);
-          const geom = new THREE.PlaneGeometry(this.feed.w, this.feed.h);
-          const screen = new THREE.Mesh(geom, mat);
-          const anchor = this.latLonToWorld(cfg.lat, cfg.lon);
-          screen.position.set(
-            anchor.x + (rigOffset?.x ?? 0),
-            5 + lift,
-            anchor.z + (rigOffset?.z ?? 0)
-          );
-          const yawDeg = cfg.yawDeg ?? (Math.random() * 360 - 180);
-          screen.rotation.set(0, THREE.MathUtils.degToRad(yawDeg) + CAMERA_YAW_OFFSET, 0);
-          screen.renderOrder = 10 + idx;
-          this.three.scene.add(screen);
-          const rig = makeRigForScreen(this.three.scene, screen, {fovDeg: 50, far: 35, color: cfg.color ?? CAMERA_ORANGE});
-          rig.group.visible = this.frustumVisible;
-          this.demoRigs.push({screen, rig});
+        const mat = new THREE.MeshBasicMaterial({
+          side: THREE.DoubleSide,
+          depthTest: true,
+          depthWrite: true,
+          toneMapped: false
         });
+        this.mjpeg.attach(mat);
+        const geom = new THREE.PlaneGeometry(this.feed.w, this.feed.h);
+        const screen = new THREE.Mesh(geom, mat);
+        const anchor = this.latLonToWorld(cfg.lat, cfg.lon);
+        screen.position.set(
+          anchor.x + (rigOffset?.x ?? 0),
+          5 + lift,
+          anchor.z + (rigOffset?.z ?? 0)
+        );
+        const yawDeg = cfg.yawDeg ?? 0;
+        screen.rotation.set(0, THREE.MathUtils.degToRad(yawDeg) + CAMERA_YAW_OFFSET, 0);
+        screen.renderOrder = 10 + index;
+        screen.userData.cameraId = cfg.id;
+        this.three.scene.add(screen);
+
+        const rigColor = cfg.color ?? CAMERA_ORANGE;
+        const rig = makeRigForScreen(this.three.scene, screen, {fovDeg: 50, far: 35, color: rigColor});
+        rig.group.visible = this.frustumVisible;
+
+        const sphereMat = new THREE.MeshStandardMaterial({
+          color: rigColor,
+          emissive: rigColor,
+          emissiveIntensity: 0.18
+        });
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(3.2, 28, 24), sphereMat);
+        sphere.position.set(rig.origin.x, rig.origin.y, rig.origin.z);
+        sphere.userData.cameraId = cfg.id;
+        sphere.renderOrder = screen.renderOrder + 1;
+        this.three.scene.add(sphere);
+
+        const entry = {id: cfg.id, lat: cfg.lat, lon: cfg.lon, yawDeg, color: rigColor, screen, rig, sphere};
+        this.cameras.push(entry);
+        return entry;
+      },
+
+      rebuildCameras() {
+        if (!this.three?.scene || !this.mjpeg) return;
+        for (const entry of this.cameras) this.disposeCameraEntry(entry);
+        this.cameras = [];
+        this.destroyAzimuth();
+        const primaryId = 'cam-primary';
+        const configs = [
+          {id: primaryId, lat: this.geo.lat, lon: this.geo.lon, yawDeg: THREE.MathUtils.radToDeg(this.cameraYaw || 0), color: CAMERA_ORANGE},
+          {id: 'cam-west', lat: 45.81331561028888, lon: 15.96973422476513, yawDeg: -45, color: 0x38bdf8},
+          {id: 'cam-east', lat: 45.81635188042051, lon: 15.985263623730928, yawDeg: 120, color: 0xf97316}
+        ];
+        configs.forEach((cfg, idx) => this.createCameraEntry(cfg, idx));
+        this.selectCamera(primaryId);
+      },
+
+      selectCamera(id) {
+        const cam = this.cameras.find(c => c.id === id);
+        if (!cam) return;
+        this.activeCameraId = id;
+        this.screen = cam.screen;
+        this.rig = cam.rig;
+        this.cameraYaw = THREE.MathUtils.degToRad(cam.yawDeg ?? 0);
+        if (this.detLines) {
+          while (this.detLines.children.length) {const child = this.detLines.children.pop(); child.geometry?.dispose?.(); this.detLines.remove(child);}
+        }
+        if (this.detDots) {
+          while (this.detDots.children.length) {const child = this.detDots.children.pop(); child.geometry?.dispose?.(); child.material?.dispose?.(); this.detDots.remove(child);}
+        }
+        this.cameras.forEach(c => {
+          if (c?.sphere?.material) {
+            c.sphere.material.emissiveIntensity = c.id === id ? 0.65 : 0.15;
+          }
+        });
+        this.destroyAzimuth();
+        this.azimuth = makeAzimuthDial({
+          scene: this.three.scene,
+          center: new THREE.Vector3(cam.rig.origin.x, 0, cam.rig.origin.z),
+          radius: 90,
+          y: 2
+        });
+        this.updateCameraBearingSphere();
+      },
+
+      getActiveCamera() {
+        if (this.activeCameraId) {
+          const found = this.cameras.find(c => c.id === this.activeCameraId);
+          if (found) return found;
+        }
+        return this.cameras[0] ?? null;
+      },
+
+      handlePointerDown(event) {
+        if (!this.three?.renderer || !this.three?.camera) return;
+        if (!this.raycaster || !this.pointer) return;
+        if (event?.button !== undefined && event.button !== 0) return;
+        const rect = this.three.renderer.domElement.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        this.pointer.set(x, y);
+        this.raycaster.setFromCamera(this.pointer, this.three.camera);
+        const spheres = this.cameras.map(c => c.sphere).filter(Boolean);
+        const hits = this.raycaster.intersectObjects(spheres, false);
+        if (hits.length) {
+          const targetId = hits[0].object.userData.cameraId;
+          if (targetId) {
+            event.stopPropagation?.();
+            event.preventDefault?.();
+            this.selectCamera(targetId);
+          }
+        }
       },
 
       async acquireLocation() {
@@ -1118,8 +1215,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
       toggleFrustum() {
         this.frustumVisible = !this.frustumVisible;
-        if (this.rig?.group) this.rig.group.visible = this.frustumVisible;
-        for (const entry of this.demoRigs) {
+        for (const entry of this.cameras) {
           if (entry.rig?.group) entry.rig.group.visible = this.frustumVisible;
         }
       },
