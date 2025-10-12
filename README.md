@@ -2,11 +2,11 @@
 
 # CUDA C++ Dojo
 
-This repository now exposes a small Rust workspace with three crates:
+This repository now exposes a small Rust workspace with three crates and a web HUD that can be served straight from the `cuda-app` binary:
 
 - `ml-core`: host-side helpers intended for future `tch`/PyTorch work
 - `gpu-kernels`: CUDA utilities built on top of `cudarc`
-- `cuda-app`: a thin binary crate that wires the other two pieces together
+- `cuda-app`: a thin binary crate that wires the other two pieces together and serves the web interfaces
 
 Out of the box the workspace demonstrates:
 
@@ -51,6 +51,11 @@ This launches the default vector-add demo. The image ships with the `with-tch` f
 
 ### Vision demo (web preview)
 
+The web HUD now ships with two routes:
+
+- `http://localhost:8080/` &mdash; the **Recon HUD** that visualises one or more virtual camera rigs on top of an OpenStreetMap plane. Each rig reuses the shared MJPEG stream, snaps to a precise lat/lon anchor, and gets a clickable sphere so you can select which rig drives the azimuth dial and detection overlays.
+- `http://localhost:8080/atak` &mdash; an **ATAK-style command view** intended to be self-hosted. It focuses on the map layer and gives you an overview of every registered camera system without the HUD widgets. Use this route when you want to coordinate multiple deployments from a single map-centric dashboard.
+
 1. Build (or rebuild after code changes):
    ```bash
    docker compose build
@@ -68,6 +73,8 @@ This launches the default vector-add demo. The image ships with the `with-tch` f
    ```
 
 Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
+
+Once the service is up, open `/` to inspect live detections with multi-camera control, or `/atak` to embed the map-only feed in wider command tooling.
 
 ### Compose services
 
