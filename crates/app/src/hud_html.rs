@@ -625,6 +625,7 @@ pub const HUD_INDEX_HTML: &str = r#"
       screen: null,
       feed: {w: 80, h: 60},
       cameraYaw: 0.0,
+      demoRigs: [],
 
       detLines: null,      // line group
       detDots: null,       // dot group
@@ -878,7 +879,12 @@ pub const HUD_INDEX_HTML: &str = r#"
         const feedW = 80, feedH = 60; this.feed = {w: feedW, h: feedH};
         const lift = feedH * 0.5;
         const screenGeom = new THREE.PlaneGeometry(feedW, feedH);
-        const screenMat = new THREE.MeshBasicMaterial({side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false});
+        const screenMat = new THREE.MeshBasicMaterial({
+          side: THREE.DoubleSide,
+          depthTest: true,
+          depthWrite: true,
+          toneMapped: false
+        });
         this.mjpeg.attach(screenMat);
         const screen = new THREE.Mesh(screenGeom, screenMat);
         const rigOffset = MAP_CORRECTION_WORLD;
@@ -900,6 +906,7 @@ pub const HUD_INDEX_HTML: &str = r#"
 
         this.azimuth = makeAzimuthDial({scene: this.three.scene, center: new THREE.Vector3(this.rig.origin.x, 0, this.rig.origin.z), radius: 90, y: 2});
         this.updateCameraBearingSphere();
+        this.spawnDemoCameras();
 
         this.detLines = new THREE.Group(); this.three.scene.add(this.detLines);
         this.detDots = new THREE.Group(); this.three.scene.add(this.detDots);
@@ -1024,6 +1031,47 @@ pub const HUD_INDEX_HTML: &str = r#"
         this.azimuth.setCameraBearingFromPoint(TMP_CENTER);
       },
 
+      spawnDemoCameras() {
+        if (!this.three?.scene || !this.map?.transform || !this.mjpeg) return;
+        for (const entry of this.demoRigs) {
+          entry.screen?.geometry?.dispose?.();
+          entry.screen?.material?.dispose?.();
+          if (entry.screen) this.three.scene.remove(entry.screen);
+          if (entry.rig?.group) this.three.scene.remove(entry.rig.group);
+        }
+        this.demoRigs = [];
+        const configs = [
+          {lat: 45.81331561028888, lon: 15.96973422476513, color: 0x38bdf8},
+          {lat: 45.81635188042051, lon: 15.985263623730928, color: 0xf97316}
+        ];
+        const rigOffset = MAP_CORRECTION_WORLD;
+        const lift = this.feed.h * 0.5;
+        configs.forEach((cfg, idx) => {
+          const mat = new THREE.MeshBasicMaterial({
+            side: THREE.DoubleSide,
+            depthTest: true,
+            depthWrite: true,
+            toneMapped: false
+          });
+          this.mjpeg.attach(mat);
+          const geom = new THREE.PlaneGeometry(this.feed.w, this.feed.h);
+          const screen = new THREE.Mesh(geom, mat);
+          const anchor = this.latLonToWorld(cfg.lat, cfg.lon);
+          screen.position.set(
+            anchor.x + (rigOffset?.x ?? 0),
+            5 + lift,
+            anchor.z + (rigOffset?.z ?? 0)
+          );
+          const yawDeg = cfg.yawDeg ?? (Math.random() * 360 - 180);
+          screen.rotation.set(0, THREE.MathUtils.degToRad(yawDeg) + CAMERA_YAW_OFFSET, 0);
+          screen.renderOrder = 10 + idx;
+          this.three.scene.add(screen);
+          const rig = makeRigForScreen(this.three.scene, screen, {fovDeg: 50, far: 35, color: cfg.color ?? CAMERA_ORANGE});
+          rig.group.visible = this.frustumVisible;
+          this.demoRigs.push({screen, rig});
+        });
+      },
+
       async acquireLocation() {
         const params = new URLSearchParams(location.search);
         if (params.get('lat') && params.get('lon')) {
@@ -1068,7 +1116,13 @@ pub const HUD_INDEX_HTML: &str = r#"
         }
       },
 
-      toggleFrustum() {this.frustumVisible = !this.frustumVisible; if (this.rig?.group) this.rig.group.visible = this.frustumVisible;},
+      toggleFrustum() {
+        this.frustumVisible = !this.frustumVisible;
+        if (this.rig?.group) this.rig.group.visible = this.frustumVisible;
+        for (const entry of this.demoRigs) {
+          if (entry.rig?.group) entry.rig.group.visible = this.frustumVisible;
+        }
+      },
     });
   </script>
 
