@@ -81,7 +81,8 @@ pub const HUD_INDEX_HTML: &str = r#"
 </head>
 
 <body x-data="hud()" class="overflow-hidden">
-  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-sm" x-show="loading.active" x-transition.opacity>
+  <div class="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/90 backdrop-blur-sm"
+    x-show="loading.active" x-transition.opacity>
     <div class="w-full max-w-sm px-8 text-center space-y-4">
       <div class="space-y-1">
         <div class="text-sm font-semibold text-slate-100" x-text="loading.label"></div>
@@ -140,7 +141,8 @@ pub const HUD_INDEX_HTML: &str = r#"
             <span>Recon Status</span>
             <span x-text="sections.status ? '−' : '+'"></span>
           </button>
-          <div x-show="sections.status" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-0.5">
+          <div x-show="sections.status" x-transition x-cloak
+            class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-0.5">
             <div>GPS: <span :class="geo.ok ? 'text-emerald-400' : 'text-amber-400'"
                 x-text="geo.ok ? 'Locked' : 'Fallback'"></span></div>
             <div>Map: <span :class="map.ready ? 'text-emerald-400' : 'text-amber-400'"
@@ -156,7 +158,8 @@ pub const HUD_INDEX_HTML: &str = r#"
             <span>Detections</span>
             <span x-text="sections.detections ? '−' : '+'"></span>
           </button>
-          <div x-show="sections.detections" x-transition x-cloak class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-1">
+          <div x-show="sections.detections" x-transition x-cloak
+            class="border-t border-slate-700/60 px-3 py-2 text-sm space-y-1">
             <div class="text-slate-300">
               Count: <span class="text-slate-100 font-semibold" x-text="uiDetections.length"></span>
             </div>
@@ -206,7 +209,7 @@ pub const HUD_INDEX_HTML: &str = r#"
       href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>
 
   <canvas id="scene"></canvas>
-  <canvas id="tileCanvas" width="768" height="768"></canvas>
+  <canvas id="tileCanvas" width="1280" height="1280"></canvas>
 
   <script type="module">
     import * as THREE from 'three';
@@ -410,27 +413,37 @@ pub const HUD_INDEX_HTML: &str = r#"
 
     // ---------- map ----------
     const d2r = d => d * Math.PI / 180;
-    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7};
+    const MAP_CORRECTION_WORLD = {x: -1.1, z: -63.7}; // applied to rig placement so map stays centered
     function latLonToTileXY(lat, lon, z) {const x = Math.floor((lon + 180) / 360 * Math.pow(2, z)); const y = Math.floor((1 - Math.log(Math.tan(d2r(lat)) + 1 / Math.cos(d2r(lat))) / Math.PI) / 2 * Math.pow(2, z)); return {x, y};}
     async function buildTilePatch({lat, lon}, zoom = 16) {
       const txFloat = ((lon + 180) / 360) * Math.pow(2, zoom);
-      const tyFloat =  (0.5 - Math.log((1 + Math.sin(d2r(lat))) / (1 - Math.sin(d2r(lat)))) / (4 * Math.PI)) * Math.pow(2, zoom);
+      const tyFloat = (0.5 - Math.log((1 + Math.sin(d2r(lat))) / (1 - Math.sin(d2r(lat)))) / (4 * Math.PI)) * Math.pow(2, zoom);
       const cx = Math.floor(txFloat), cy = Math.floor(tyFloat);
       const fx = txFloat - cx, fy = tyFloat - cy;
-      const tileSize = 256, grid = 3;
-      const canvas = document.getElementById('tileCanvas'); canvas.width = tileSize * grid; canvas.height = tileSize * grid;
+      const tileSize = 256, tileRadius = 2, baseGrid = tileRadius * 2 + 1;
+      const canvas = document.getElementById('tileCanvas'); canvas.width = tileSize * baseGrid; canvas.height = tileSize * baseGrid;
       const ctx = canvas.getContext('2d', {willReadFrequently: true}); let ok = 0; const loads = [];
-      const shiftX = (canvas.width * 0.5) - ((1 + fx) * tileSize);
-      const shiftY = (canvas.height * 0.5) - ((1 + fy) * tileSize);
+      const shiftX = (canvas.width * 0.5) - ((tileRadius + fx) * tileSize);
+      const shiftY = (canvas.height * 0.5) - ((tileRadius + fy) * tileSize);
+      let minDx = -tileRadius, maxDx = tileRadius;
+      let minDy = -tileRadius, maxDy = tileRadius;
+      let coverageLeft = shiftX + (minDx + tileRadius) * tileSize;
+      while (coverageLeft > 0) {minDx--; coverageLeft -= tileSize;}
+      let coverageRight = shiftX + (maxDx + tileRadius + 1) * tileSize;
+      while (coverageRight < canvas.width) {maxDx++; coverageRight += tileSize;}
+      let coverageTop = shiftY + (minDy + tileRadius) * tileSize;
+      while (coverageTop > 0) {minDy--; coverageTop -= tileSize;}
+      let coverageBottom = shiftY + (maxDy + tileRadius + 1) * tileSize;
+      while (coverageBottom < canvas.height) {maxDy++; coverageBottom += tileSize;}
       ctx.save();
       ctx.fillStyle = '#0b0f14';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.translate(shiftX, shiftY);
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = minDy; dy <= maxDy; dy++) for (let dx = minDx; dx <= maxDx; dx++) {
         const url = `https://tile.openstreetmap.org/${zoom}/${cx + dx}/${cy + dy}.png`;
         loads.push(new Promise(res => {
           const img = new Image(); img.crossOrigin = 'anonymous';
-          img.onload = () => {ctx.drawImage(img, (dx + 1) * tileSize, (dy + 1) * tileSize); ok++; res();};
+          img.onload = () => {ctx.drawImage(img, (dx + tileRadius) * tileSize, (dy + tileRadius) * tileSize); ok++; res();};
           img.onerror = () => res(); img.src = url;
         }));
       }
@@ -633,8 +646,8 @@ pub const HUD_INDEX_HTML: &str = r#"
         const dxPx = px.x - transform.centerPx.x;
         const dzPx = px.y - transform.centerPx.y;
         return {
-          x: dxPx * transform.pxToWorldX + (transform.correction?.x ?? 0),
-          z: -dzPx * transform.pxToWorldZ + (transform.correction?.z ?? 0)
+          x: dxPx * transform.pxToWorldX,
+          z: -dzPx * transform.pxToWorldZ
         };
       },
 
@@ -868,9 +881,13 @@ pub const HUD_INDEX_HTML: &str = r#"
         const screenMat = new THREE.MeshBasicMaterial({side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false});
         this.mjpeg.attach(screenMat);
         const screen = new THREE.Mesh(screenGeom, screenMat);
+        const rigOffset = MAP_CORRECTION_WORLD;
         const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
-        const mapOffset = this.map.mesh?.position ?? {x: 0, z: 0};
-        screen.position.set(anchor.x + mapOffset.x, 5 + lift, anchor.z + mapOffset.z);
+        screen.position.set(
+          anchor.x + (rigOffset?.x ?? 0),
+          5 + lift,
+          anchor.z + (rigOffset?.z ?? 0)
+        );
         this.three.scene.add(screen);
         this.screen = screen;
 
@@ -1036,19 +1053,18 @@ pub const HUD_INDEX_HTML: &str = r#"
           if (this.map.mesh) {this.three.scene.remove(this.map.mesh); this.map.mesh.geometry.dispose(); this.map.mesh.material.map.dispose(); this.map.mesh.material.dispose();}
           this.three.scene.add(ground); this.map.mesh = ground; this.map.ready = true;
           const centerPx = latLonToGlobalPixels(this.geo.lat, this.geo.lon, this.map.zoom);
-      const pxToWorldX = planeSize / patch.width;
-      const pxToWorldZ = (planeSize * aspect) / patch.height;
-      this.map.transform = {
-        centerPx,
-        pxToWorldX,
-        pxToWorldZ,
-        correction: MAP_CORRECTION_WORLD
-      };
-      const anchor = this.latLonToWorld(this.geo.lat, this.geo.lon);
-      ground.position.set(-anchor.x, 0, -anchor.z);
-    } catch {
-      this.map.ready = false;
-      this.setLoading(this.loading.progress, 'Map tiles unavailable');
+          const pxToWorldX = planeSize / patch.width;
+          const pxToWorldZ = (planeSize * aspect) / patch.height;
+          this.map.transform = {
+            centerPx,
+            pxToWorldX,
+            pxToWorldZ
+          };
+          // Keep the map plane centered; corrections are applied to the virtual rig instead.
+          ground.position.set(0, 0, 0);
+        } catch {
+          this.map.ready = false;
+          this.setLoading(this.loading.progress, 'Map tiles unavailable');
         }
       },
 
