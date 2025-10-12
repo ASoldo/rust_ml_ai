@@ -1,5 +1,3 @@
-<img width="946" height="942" alt="image" src="https://github.com/user-attachments/assets/baefadf4-1690-407c-b34d-23f9de40ff2f" />
-
 # CUDA C++ Dojo
 
 This repository now exposes a small Rust workspace with three crates and a web HUD that can be served straight from the `cuda-app` binary:
@@ -53,7 +51,12 @@ This launches the default vector-add demo. The image ships with the `with-tch` f
 
 The web HUD now ships with two routes:
 
+<img width="1893" height="940" alt="image" src="https://github.com/user-attachments/assets/e14e44f4-c6c4-4091-91bf-ef686c2eb4d6" />
+
 - `http://localhost:8080/` &mdash; the **Recon HUD** that visualises one or more virtual camera rigs on top of an OpenStreetMap plane. Each rig reuses the shared MJPEG stream, snaps to a precise lat/lon anchor, and gets a clickable sphere so you can select which rig drives the azimuth dial and detection overlays.
+
+<img width="1899" height="939" alt="image" src="https://github.com/user-attachments/assets/4a328f04-a21f-44b1-b151-eac09a5b21ca" />
+
 - `http://localhost:8080/atak` &mdash; an **ATAK-style command view** intended to be self-hosted. It focuses on the map layer and gives you an overview of every registered camera system without the HUD widgets. Use this route when you want to coordinate multiple deployments from a single map-centric dashboard.
 
 1. Build (or rebuild after code changes):
