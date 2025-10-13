@@ -178,7 +178,9 @@ fn update_stream_texture(
 
     if let (Some(stream_material), Some(materials)) = (stream_material, materials.as_mut()) {
         if let Some(material) = materials.get_mut(&stream_material.handle) {
-            material.base_color_texture = Some(stream_texture.handle.clone());
+            if material.base_color_texture.is_none() {
+                material.base_color_texture = Some(stream_texture.handle.clone());
+            }
         }
     }
 }

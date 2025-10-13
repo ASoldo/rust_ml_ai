@@ -79,9 +79,9 @@ fn control_orbit_camera(
 
     for (mut transform, mut orbit) in query.iter_mut() {
         if rotation_delta.length_squared() > 0.0 {
-            orbit.yaw -= rotation_delta.x * ORBIT_SENSITIVITY;
+            orbit.yaw += rotation_delta.x * ORBIT_SENSITIVITY;
             orbit.pitch =
-                (orbit.pitch - rotation_delta.y * ORBIT_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
+                (orbit.pitch + rotation_delta.y * ORBIT_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
         }
 
         if scroll.abs() > f32::EPSILON {
