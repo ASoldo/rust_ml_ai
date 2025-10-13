@@ -10,6 +10,8 @@ pub const MAP_WIDTH: f32 = 120.0;
 
 pub const RIG_ROOT: Vec3 = Vec3::ZERO;
 pub const RIG_HEIGHT: f32 = 2.2;
+pub const CAMERA_MAST_EXTRA: f32 = 3.5;
+pub const CAMERA_HEAD_HEIGHT: f32 = RIG_HEIGHT + CAMERA_MAST_EXTRA;
 pub const PLANE_DISTANCE: f32 = 3.6;
 
 #[derive(Component)]
@@ -64,8 +66,8 @@ pub fn spawn_environment(
         handle: stream_material.clone(),
     });
 
-    let rig_tip = RIG_ROOT + Vec3::Y * RIG_HEIGHT;
-    let plane_center = RIG_ROOT + Vec3::new(0.0, RIG_HEIGHT, -PLANE_DISTANCE);
+    let rig_tip = RIG_ROOT + Vec3::Y * CAMERA_HEAD_HEIGHT;
+    let plane_center = RIG_ROOT + Vec3::new(0.0, CAMERA_HEAD_HEIGHT, -PLANE_DISTANCE);
     let plane_normal = (rig_tip - plane_center).normalize_or_zero();
     let plane_rotation = if plane_normal.length_squared() > 0.0 {
         Quat::from_rotation_arc(Vec3::Y, plane_normal)

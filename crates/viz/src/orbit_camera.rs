@@ -3,13 +3,13 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
-use crate::scene::{PLANE_DISTANCE, RIG_HEIGHT, RIG_ROOT};
+use crate::scene::{CAMERA_HEAD_HEIGHT, PLANE_DISTANCE, RIG_ROOT};
 
 const ORBIT_SENSITIVITY: f32 = 0.01;
-const ZOOM_SENSITIVITY: f32 = 0.8;
+const ZOOM_SENSITIVITY: f32 = 0.6;
 const MIN_PITCH: f32 = -FRAC_PI_2 + 0.05;
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.05;
-const INITIAL_CAMERA_POS: Vec3 = Vec3::new(0.0, RIG_HEIGHT + 0.6, -PLANE_DISTANCE * 10.7);
+const INITIAL_CAMERA_POS: Vec3 = Vec3::new(0.0, CAMERA_HEAD_HEIGHT + 0.6, -PLANE_DISTANCE * 10.7);
 
 pub struct OrbitCameraPlugin;
 
@@ -43,7 +43,7 @@ impl OrbitCamera {
             yaw,
             pitch,
             min_radius: 1.5,
-            max_radius: 45.0,
+            max_radius: 250.0,
         }
     }
 }

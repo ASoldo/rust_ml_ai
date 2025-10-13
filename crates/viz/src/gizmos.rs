@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 
-use crate::scene::{CameraFeedPlane, PLANE_ASPECT_RATIO, PLANE_WIDTH, RIG_HEIGHT, RIG_ROOT};
+use crate::scene::{
+    CAMERA_HEAD_HEIGHT, CameraFeedPlane, PLANE_ASPECT_RATIO, PLANE_WIDTH, RIG_ROOT,
+};
 
 const ROOT_AXIS_LEN: f32 = 0.35;
 const FRUSTUM_COLOR: Color = Color::srgb(0.2, 0.8, 1.0);
@@ -23,7 +25,7 @@ fn draw_camera_rig_gizmos(
         return;
     };
 
-    let rig_tip = RIG_ROOT + Vec3::Y * RIG_HEIGHT;
+    let rig_tip = RIG_ROOT + Vec3::Y * CAMERA_HEAD_HEIGHT;
     gizmos.sphere(RIG_ROOT, 0.04, Color::srgb(1.0, 0.2, 0.2));
     gizmos.line(RIG_ROOT, rig_tip, CAMERA_LINK_COLOR);
     draw_root_axes(&mut gizmos, RIG_ROOT);
