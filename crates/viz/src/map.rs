@@ -25,11 +25,11 @@ impl Default for StaticMapConfig {
         let latitude = std::env::var("VIZ_MAP_LAT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(45.813198697697544);
+            .unwrap_or(45.81298654949797);
         let longitude = std::env::var("VIZ_MAP_LON")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(15.977306292598803);
+            .unwrap_or(15.977990737614029);
         let zoom = std::env::var("VIZ_MAP_ZOOM")
             .ok()
             .and_then(|v| v.parse().ok())

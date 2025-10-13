@@ -74,7 +74,9 @@ pub fn spawn_environment(
     } else {
         Quat::IDENTITY
     };
-    let plane_transform = Transform::from_translation(plane_center).with_rotation(plane_rotation);
+    let mut plane_transform =
+        Transform::from_translation(plane_center).with_rotation(plane_rotation);
+    plane_transform.scale.x *= -1.0;
 
     commands.spawn((
         Name::new("Camera Feed Plane"),
