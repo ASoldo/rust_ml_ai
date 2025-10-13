@@ -1,10 +1,12 @@
 use bevy::math::primitives::Plane3d;
 use bevy::prelude::*;
 
+use crate::map::MapTexture;
 use crate::stream::{StreamMaterial, StreamTexture};
 
 pub const PLANE_WIDTH: f32 = 12.0;
 pub const PLANE_ASPECT_RATIO: f32 = 16.0 / 9.0;
+pub const MAP_WIDTH: f32 = 120.0;
 
 pub const RIG_ROOT: Vec3 = Vec3::ZERO;
 pub const RIG_HEIGHT: f32 = 2.2;
@@ -18,7 +20,32 @@ pub fn spawn_environment(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     stream_texture: Res<StreamTexture>,
+    map_texture: Res<MapTexture>,
 ) {
+    let map_mesh = meshes.add(Mesh::from(
+        Plane3d::default().mesh().size(MAP_WIDTH, MAP_WIDTH),
+    ));
+    let map_material = materials.add(StandardMaterial {
+        base_color_texture: Some(map_texture.handle.clone()),
+        base_color: Color::WHITE,
+        perceptual_roughness: 1.0,
+        metallic: 0.0,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+
+    commands.spawn((
+        Name::new("Ground Map"),
+        Mesh3d(map_mesh),
+        MeshMaterial3d(map_material),
+        Transform::from_translation(RIG_ROOT + Vec3::new(0.0, -0.01, 0.0)),
+        GlobalTransform::default(),
+        Visibility::default(),
+        InheritedVisibility::VISIBLE,
+        ViewVisibility::default(),
+    ));
+
     let plane_mesh = meshes.add(Mesh::from(
         Plane3d::default()
             .mesh()

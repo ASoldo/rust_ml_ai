@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResolution};
 
 mod gizmos;
+mod map;
 mod orbit_camera;
 mod scene;
 mod stream;
@@ -36,11 +37,14 @@ impl Plugin for VizAppPlugin {
                     }),
             )
             .add_plugins(stream::StreamTexturePlugin)
+            .add_plugins(map::MapTexturePlugin)
             .add_plugins(gizmos::CameraRigGizmosPlugin)
             .add_plugins(OrbitCameraPlugin)
             .add_systems(
                 Startup,
-                scene::spawn_environment.after(stream::StreamSetupSet),
+                scene::spawn_environment
+                    .after(stream::StreamSetupSet)
+                    .after(map::MapSetupSet),
             )
             .add_systems(Update, stream::debug_texture_sample);
     }
