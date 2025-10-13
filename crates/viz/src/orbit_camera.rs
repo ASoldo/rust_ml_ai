@@ -3,11 +3,13 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use std::f32::consts::FRAC_PI_2;
 
+use crate::scene::{PLANE_DISTANCE, RIG_HEIGHT, RIG_ROOT};
+
 const ORBIT_SENSITIVITY: f32 = 0.01;
 const ZOOM_SENSITIVITY: f32 = 0.8;
 const MIN_PITCH: f32 = -FRAC_PI_2 + 0.05;
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.05;
-const INITIAL_CAMERA_POS: Vec3 = Vec3::new(0.0, 10.0, 2.0);
+const INITIAL_CAMERA_POS: Vec3 = Vec3::new(0.0, RIG_HEIGHT + 0.6, -PLANE_DISTANCE * 10.7);
 
 pub struct OrbitCameraPlugin;
 
@@ -48,12 +50,12 @@ impl OrbitCamera {
 
 fn spawn_camera(mut commands: Commands) {
     let translation = INITIAL_CAMERA_POS;
-    let focus = Vec3::ZERO;
+    let focus = RIG_ROOT;
 
     commands.spawn((
         Name::new("Viewer Camera"),
         Camera3d::default(),
-        Transform::from_translation(translation).looking_at(focus, Vec3::Z),
+        Transform::from_translation(translation).looking_at(focus, Vec3::Y),
         OrbitCamera::new(focus, translation),
     ));
 }

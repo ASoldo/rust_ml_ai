@@ -3,8 +3,15 @@ use bevy::prelude::*;
 
 use crate::stream::{StreamMaterial, StreamTexture};
 
-const PLANE_WIDTH: f32 = 12.0;
-const PLANE_ASPECT_RATIO: f32 = 16.0 / 9.0;
+pub const PLANE_WIDTH: f32 = 12.0;
+pub const PLANE_ASPECT_RATIO: f32 = 16.0 / 9.0;
+
+pub const RIG_ROOT: Vec3 = Vec3::ZERO;
+pub const RIG_HEIGHT: f32 = 2.2;
+pub const PLANE_DISTANCE: f32 = 3.6;
+
+#[derive(Component)]
+pub struct CameraFeedPlane;
 
 pub fn spawn_environment(
     mut commands: Commands,
@@ -30,20 +37,26 @@ pub fn spawn_environment(
         handle: stream_material.clone(),
     });
 
+    let rig_tip = RIG_ROOT + Vec3::Y * RIG_HEIGHT;
+    let plane_center = RIG_ROOT + Vec3::new(0.0, RIG_HEIGHT, -PLANE_DISTANCE);
+    let plane_normal = (rig_tip - plane_center).normalize_or_zero();
+    let plane_rotation = if plane_normal.length_squared() > 0.0 {
+        Quat::from_rotation_arc(Vec3::Y, plane_normal)
+    } else {
+        Quat::IDENTITY
+    };
+    let plane_transform = Transform::from_translation(plane_center).with_rotation(plane_rotation);
+
     commands.spawn((
         Name::new("Camera Feed Plane"),
         Mesh3d(plane_mesh),
         MeshMaterial3d(stream_material.clone()),
-        Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            0.0,
-            0.0,
-            std::f32::consts::PI,
-        )),
+        plane_transform,
         GlobalTransform::default(),
         Visibility::default(),
         InheritedVisibility::VISIBLE,
         ViewVisibility::default(),
+        CameraFeedPlane,
     ));
 
     commands.spawn((

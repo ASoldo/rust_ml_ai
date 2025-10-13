@@ -2,6 +2,7 @@ use bevy::asset::{AssetMode, AssetPlugin};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResolution};
 
+mod gizmos;
 mod orbit_camera;
 mod scene;
 mod stream;
@@ -35,6 +36,7 @@ impl Plugin for VizAppPlugin {
                     }),
             )
             .add_plugins(stream::StreamTexturePlugin)
+            .add_plugins(gizmos::CameraRigGizmosPlugin)
             .add_plugins(OrbitCameraPlugin)
             .add_systems(
                 Startup,
