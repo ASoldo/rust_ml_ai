@@ -154,7 +154,7 @@ impl VisionRuntime {
                     self.nvjpeg_encoder_state,
                     self.nvjpeg_encoder_params,
                     &image,
-                    nvjpegInputFormat_t_NVJPEG_INPUT_BGR,
+                    nvjpegInputFormat_t_NVJPEG_INPUT_BGRI,
                     width,
                     height,
                     stream_ptr,
@@ -320,7 +320,7 @@ impl VisionRuntime {
         Ok(self.info_text.as_mut().unwrap())
     }
 
-    /// Uploads RGBA pixels, resizes/normalises them, and stores the tensor-ready buffer on the GPU.
+    /// Uploads BGR pixels, resizes/normalises them, and stores the tensor-ready buffer on the GPU.
     pub fn preprocess_bgr(
         &mut self,
         bgr: &[u8],
@@ -410,11 +410,12 @@ impl VisionRuntime {
             }
         }
         stream.synchronize()?;
-        let result = stream.memcpy_dtov(self.keep_flags.as_ref().unwrap())?;
+        let mut result = stream.memcpy_dtov(self.keep_flags.as_ref().unwrap())?;
+        result.truncate(num_boxes);
         Ok(result)
     }
 
-    /// Annotates the resized RGBA buffer with detection overlays.
+    /// Annotates the resized BGR buffer with detection overlays.
     #[allow(clippy::too_many_arguments)]
     pub fn annotate(
         &mut self,

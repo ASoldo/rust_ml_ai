@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-with-tch = ["ml-core/with-tch"]
+with-tch = ["ml-core/with-tch", "libloading"]
 
 [dependencies]
 actix-cors = "0.7.1"
@@ -24,3 +24,4 @@ serde_json = "1.0.145"
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
+libloading = { version = "0.8.4", optional = true }

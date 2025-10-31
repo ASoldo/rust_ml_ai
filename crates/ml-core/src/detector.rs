@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use gpu_kernels::{PreprocessOutput, VisionRuntime};
-use tch::{self, Device, Kind, Tensor};
+use tch::{self, Device, Kind, Tensor, no_grad};
 
 /// Single detection returned by the detector.
 #[derive(Debug, Clone, Default)]
@@ -39,7 +39,8 @@ impl Detector {
         device: Device,
         input_size: (i64, i64),
     ) -> Result<Self> {
-        let module = tch::CModule::load_on_device(model_path, device)?;
+        let mut module = tch::CModule::load_on_device(model_path, device)?;
+        module.set_eval();
         let vision = match device {
             Device::Cuda(index) => {
                 let device_index = i32::try_from(index)
@@ -67,6 +68,14 @@ impl Detector {
 
     pub fn input_size(&self) -> (i64, i64) {
         self.input_size
+    }
+
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
+    pub fn uses_gpu_runtime(&self) -> bool {
+        self.vision.is_some()
     }
 
     /// Converts an interleaved BGR frame into a normalised tensor on the chosen device.
@@ -123,7 +132,7 @@ impl Detector {
 
     /// Executes the TorchScript module and performs basic confidence filtering.
     pub fn infer(&self, input: &Tensor) -> Result<DetectionBatch> {
-        let output = self.module.forward_ts(&[input])?;
+        let output = no_grad(|| self.module.forward_ts(&[input]))?;
         let shape = output.size();
         if shape.len() != 3 {
             anyhow::bail!("unexpected detector output shape: {shape:?}");

@@ -70,12 +70,12 @@ The web HUD now ships with two routes:
    ```
 
 3. For ad-hoc runs with custom flags use:
-   ```bash
-   docker compose run --rm --service-ports cuda-app \
-     vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640
-   ```
+```bash
+docker compose run --rm --service-ports cuda-app \
+  vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640
+```
 
-Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
+Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Use `--detector-width/--detector-height` to run inference at a lower resolution than the preview stream, and `--jpeg-quality` (1–100) to trade off encoding speed vs. fidelity. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
 
 Once the service is up, open `/` to inspect live detections with multi-camera control, or `/atak` to embed the map-only feed in wider command tooling.
 

@@ -5,7 +5,7 @@ extern "C" __global__ void bgr_resize_normalize(
     int out_width,
     int out_height,
     float* out_tensor,
-    unsigned char* out_rgba
+    unsigned char* out_bgr
 ) {
     const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const unsigned int total = (unsigned int)(out_width * out_height);
@@ -72,11 +72,10 @@ extern "C" __global__ void bgr_resize_normalize(
     out_tensor[idx + plane_stride] = g;
     out_tensor[idx + plane_stride * 2] = b;
 
-    unsigned char* dst = out_rgba + idx * 4;
-    dst[0] = (unsigned char)fminf(fmaxf(r * 255.0f, 0.0f), 255.0f);
+    unsigned char* dst = out_bgr + idx * 3;
+    dst[0] = (unsigned char)fminf(fmaxf(b * 255.0f, 0.0f), 255.0f);
     dst[1] = (unsigned char)fminf(fmaxf(g * 255.0f, 0.0f), 255.0f);
-    dst[2] = (unsigned char)fminf(fmaxf(b * 255.0f, 0.0f), 255.0f);
-    dst[3] = 255u;
+    dst[2] = (unsigned char)fminf(fmaxf(r * 255.0f, 0.0f), 255.0f);
 }
 
 __device__ __forceinline__ float iou_single(

@@ -6,15 +6,17 @@ use ml_core::sample_inputs;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Once},
     time::Duration,
 };
 
 #[cfg(feature = "with-tch")]
 use ml_core::{
-    DetectionBatch, TrainingConfig, detector::Detector, predict_image_file, tch::Device,
-    train_mnist,
+    TrainingConfig, detector::Detector, predict_image_file, tch::Device, train_mnist,
 };
+
+#[cfg(feature = "with-tch")]
+use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 
 #[cfg(feature = "with-tch")]
 use gpu_kernels::VisionRuntime;
@@ -256,9 +258,7 @@ fn print_mnist_help() {
 #[cfg(feature = "with-tch")]
 fn run_vision_demo(args: &[String]) {
     if args.len() < 6 {
-        eprintln!(
-            "Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose]"
-        );
+        eprintln!("Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]");
         return;
     }
 
@@ -278,26 +278,113 @@ fn run_vision_demo(args: &[String]) {
             return;
         }
     };
-    let verbose = args.iter().any(|arg| arg == "--verbose");
-    let use_cpu = args.iter().any(|arg| arg == "--cpu");
-    let use_nvdec = args.iter().any(|arg| arg == "--nvdec");
+    load_torch_cuda_runtime();
+
+    let mut verbose = false;
+    let mut use_cpu = false;
+    let mut use_nvdec = false;
+    let mut detector_width = width;
+    let mut detector_height = height;
+    let mut jpeg_quality: i32 = 85;
+
+    let mut idx = 6;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--verbose" => {
+                verbose = true;
+                idx += 1;
+            }
+            "--cpu" => {
+                use_cpu = true;
+                idx += 1;
+            }
+            "--nvdec" => {
+                use_nvdec = true;
+                idx += 1;
+            }
+            "--detector-width" => {
+                idx += 1;
+                if idx >= args.len() {
+                    eprintln!("--detector-width requires a value");
+                    return;
+                }
+                match args[idx].parse::<i32>() {
+                    Ok(value) if value > 0 => detector_width = value,
+                    _ => {
+                        eprintln!("--detector-width must be a positive integer");
+                        return;
+                    }
+                }
+                idx += 1;
+            }
+            "--detector-height" => {
+                idx += 1;
+                if idx >= args.len() {
+                    eprintln!("--detector-height requires a value");
+                    return;
+                }
+                match args[idx].parse::<i32>() {
+                    Ok(value) if value > 0 => detector_height = value,
+                    _ => {
+                        eprintln!("--detector-height must be a positive integer");
+                        return;
+                    }
+                }
+                idx += 1;
+            }
+            "--jpeg-quality" => {
+                idx += 1;
+                if idx >= args.len() {
+                    eprintln!("--jpeg-quality requires a value");
+                    return;
+                }
+                match args[idx].parse::<i32>() {
+                    Ok(value) if (1..=100).contains(&value) => jpeg_quality = value,
+                    _ => {
+                        eprintln!("--jpeg-quality must be an integer between 1 and 100");
+                        return;
+                    }
+                }
+                idx += 1;
+            }
+            other => {
+                eprintln!("Unrecognised flag: {other}");
+                return;
+            }
+        }
+    }
     if use_cpu && use_nvdec {
         eprintln!("--cpu and --nvdec are mutually exclusive");
         return;
     }
+    let cuda_available = ml_core::tch::Cuda::is_available();
+    let cuda_devices = ml_core::tch::Cuda::device_count();
+    println!(
+        "CUDA available: {} (devices: {})",
+        cuda_available, cuda_devices
+    );
     let device = if use_cpu {
         Device::Cpu
     } else {
         Device::cuda_if_available()
     };
 
-    let detector = match Detector::new(&model_path, device, (width as i64, height as i64)) {
+    let detector = match Detector::new(
+        &model_path,
+        device,
+        (detector_width as i64, detector_height as i64),
+    ) {
         Ok(det) => det,
         Err(err) => {
             eprintln!("Failed to load detector: {err}");
             return;
         }
     };
+    println!(
+        "Detector loaded on {:?} (vision runtime enabled: {})",
+        detector.device(),
+        detector.uses_gpu_runtime()
+    );
 
     let receiver = if use_nvdec {
         match video_ingest::spawn_nvdec_h264_reader(&camera_uri, (width, height)) {
@@ -368,6 +455,7 @@ fn run_vision_demo(args: &[String]) {
                         &frame,
                         &tracker,
                         verbose,
+                        jpeg_quality,
                         detector.vision_runtime(),
                     ) {
                         Ok(packet) => {
@@ -408,6 +496,7 @@ fn process_frame(
     frame: &Frame,
     tracker: &Arc<Mutex<SimpleTracker>>,
     verbose: bool,
+    jpeg_quality: i32,
     vision: Option<Arc<Mutex<VisionRuntime>>>,
 ) -> AnyResult<FramePacket> {
     if !matches!(frame.format, FrameFormat::Bgr8) {
@@ -434,12 +523,23 @@ fn process_frame(
     let mut summaries = Vec::with_capacity(detections.detections.len());
     let mut label_positions = Vec::with_capacity(detections.detections.len());
     let mut boxes_px = Vec::with_capacity(detections.detections.len());
+    let (detector_w, detector_h) = detector.input_size();
+    let scale_x = if detector_w > 0 {
+        frame.width as f32 / detector_w as f32
+    } else {
+        1.0
+    };
+    let scale_y = if detector_h > 0 {
+        frame.height as f32 / detector_h as f32
+    } else {
+        1.0
+    };
 
     for det in &detections.detections {
-        let left = det.bbox[0].clamp(0.0, (frame.width - 1) as f32);
-        let top = det.bbox[1].clamp(0.0, (frame.height - 1) as f32);
-        let right = det.bbox[2].clamp(0.0, (frame.width - 1) as f32);
-        let bottom = det.bbox[3].clamp(0.0, (frame.height - 1) as f32);
+        let left = (det.bbox[0] * scale_x).clamp(0.0, (frame.width - 1) as f32);
+        let top = (det.bbox[1] * scale_y).clamp(0.0, (frame.height - 1) as f32);
+        let right = (det.bbox[2] * scale_x).clamp(0.0, (frame.width - 1) as f32);
+        let bottom = (det.bbox[3] * scale_y).clamp(0.0, (frame.height - 1) as f32);
 
         let left_i = left.round() as i32;
         let top_i = top.round() as i32;
@@ -486,17 +586,10 @@ fn process_frame(
             &boxes_px,
             &label_positions,
             &labels,
+            jpeg_quality,
         )
     } else {
-        annotate_frame_cpu(
-            frame,
-            DetectionBatch {
-                detections: detections.detections,
-            },
-            frame_number,
-            fps,
-            summaries,
-        )
+        annotate_frame_cpu(frame, frame_number, fps, summaries, jpeg_quality)
     }
 }
 
@@ -661,10 +754,10 @@ async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpRespons
 #[cfg(feature = "with-tch")]
 fn annotate_frame_cpu(
     frame: &Frame,
-    detections: DetectionBatch,
     frame_number: u64,
     fps: f32,
     summaries: Vec<DetectionSummary>,
+    jpeg_quality: i32,
 ) -> AnyResult<FramePacket> {
     let width = frame.width as u32;
     let height = frame.height as u32;
@@ -672,13 +765,11 @@ fn annotate_frame_cpu(
     let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width, height, rgba)
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
-    let mut label_positions = Vec::with_capacity(detections.detections.len());
-
-    for det in &detections.detections {
-        let left = det.bbox[0].clamp(0.0, (width - 1) as f32);
-        let top = det.bbox[1].clamp(0.0, (height - 1) as f32);
-        let right = det.bbox[2].clamp(0.0, (width - 1) as f32);
-        let bottom = det.bbox[3].clamp(0.0, (height - 1) as f32);
+    for summary in &summaries {
+        let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
+        let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
+        let right = summary.bbox[2].clamp(0.0, (width - 1) as f32);
+        let bottom = summary.bbox[3].clamp(0.0, (height - 1) as f32);
         draw_rectangle(
             &mut image,
             left.round() as i32,
@@ -687,11 +778,11 @@ fn annotate_frame_cpu(
             bottom.round() as i32,
             Rgba([0, 255, 0, 255]),
         );
-
-        label_positions.push((left, top));
     }
 
-    for (summary, (left, top)) in summaries.iter().zip(label_positions.iter()) {
+    for summary in &summaries {
+        let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
+        let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
         let label_text = format!(
             "{} {} {:.0}%",
             summary.class,
@@ -740,7 +831,8 @@ fn annotate_frame_cpu(
 
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
-    JpegEncoder::new_with_quality(&mut buffer, 70).encode_image(&rgb)?;
+    let quality = jpeg_quality.clamp(1, 100) as u8;
+    JpegEncoder::new_with_quality(&mut buffer, quality).encode_image(&rgb)?;
 
     Ok(FramePacket {
         jpeg: buffer,
@@ -761,6 +853,7 @@ fn annotate_frame_gpu(
     boxes: &[[i32; 4]],
     label_positions: &[(i32, i32)],
     label_texts: &[String],
+    jpeg_quality: i32,
 ) -> AnyResult<FramePacket> {
     let width = frame.width;
     let height = frame.height;
@@ -808,8 +901,9 @@ fn annotate_frame_gpu(
             (info_x, info_y),
         )
         .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
+    let quality = jpeg_quality.clamp(1, 100);
     let buffer = guard
-        .encode_jpeg(width, height, 85)
+        .encode_jpeg(width, height, quality)
         .map_err(|err| anyhow!("nvjpeg encode failed: {err}"))?;
 
     Ok(FramePacket {
@@ -1005,3 +1099,30 @@ fn assign_tracks(tracker: &Arc<Mutex<SimpleTracker>>, detections: &mut [Detectio
         }
     }
 }
+
+#[cfg(feature = "with-tch")]
+fn load_torch_cuda_runtime() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let mut handles = Vec::new();
+        for lib in [
+            "libtorch_cuda.so",
+            "libtorch_cuda_cu.so",
+            "libtorch_cuda_cpp.so",
+        ] {
+            match unsafe { Library::open(Some(lib), RTLD_NOW | RTLD_GLOBAL) } {
+                Ok(handle) => {
+                    println!("Loaded {lib}");
+                    handles.push(handle);
+                }
+                Err(err) => {
+                    eprintln!("Warning: failed to load {lib}: {err}");
+                }
+            }
+        }
+        Box::leak(Box::new(handles));
+    });
+}
+
+#[cfg(not(feature = "with-tch"))]
+fn load_torch_cuda_runtime() {}
