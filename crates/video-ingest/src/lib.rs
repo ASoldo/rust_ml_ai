@@ -248,8 +248,20 @@ fn open_video_capture(uri: &str) -> Result<VideoCapture, CaptureError> {
 }
 
 fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
-    if let Ok(fourcc) = videoio::VideoWriter::fourcc('Y', 'U', 'Y', 'V') {
-        let _ = cap.set(videoio::CAP_PROP_FOURCC, fourcc as f64);
+    // Prefer MJPG since many UVC devices expose higher frame rates for the compressed stream.
+    let mut fourcc_set = false;
+    if let Ok(mjpg) = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G') {
+        if matches!(
+            cap.set(videoio::CAP_PROP_FOURCC, mjpg as f64),
+            Ok(true)
+        ) {
+            fourcc_set = true;
+        }
+    }
+    if !fourcc_set {
+        if let Ok(yuyv) = videoio::VideoWriter::fourcc('Y', 'U', 'Y', 'V') {
+            let _ = cap.set(videoio::CAP_PROP_FOURCC, yuyv as f64);
+        }
     }
     let _ = cap.set(videoio::CAP_PROP_FRAME_WIDTH, target_size.0 as f64);
     let _ = cap.set(videoio::CAP_PROP_FRAME_HEIGHT, target_size.1 as f64);
