@@ -86,7 +86,7 @@ pub fn print_help() {
     );
     println!("  {PREDICT_USAGE}\n      Load a trained model and classify a 28x28 grayscale image.");
     println!(
-        "  vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]\n      Stream frames, run the detector, opt into CPU fallback or NVDEC capture."
+        "  vision <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]\n      Stream frames, run the detector, opt into CPU fallback or NVDEC capture."
     );
     println!("  mnist-help\n      Show this message.");
 }

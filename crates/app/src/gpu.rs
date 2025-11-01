@@ -3,7 +3,7 @@ use ml_core::sample_inputs;
 
 const ELEMENT_COUNT: usize = 16;
 
-/// Run the simple GPU vector addition demo.
+/// Run the simple GPU vector addition check.
 pub fn run() {
     let (a, b) = sample_inputs(ELEMENT_COUNT);
 

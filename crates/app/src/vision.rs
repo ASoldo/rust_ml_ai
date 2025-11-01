@@ -22,7 +22,7 @@ use tracing::{debug, error, info, warn};
 use video_ingest::{self, Frame, FrameFormat};
 
 #[derive(Clone, Debug)]
-pub struct VisionDemoConfig {
+pub struct VisionConfig {
     pub camera_uri: String,
     pub model_path: PathBuf,
     pub width: i32,
@@ -35,11 +35,11 @@ pub struct VisionDemoConfig {
     pub jpeg_quality: i32,
 }
 
-impl VisionDemoConfig {
+impl VisionConfig {
     pub fn from_args(args: &[String]) -> Result<Self> {
         if args.len() < 6 {
             bail!(
-                "Usage: cargo run -p cuda-app --features with-tch -- vision-demo <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]"
+                "Usage: cargo run -p cuda-app --features with-tch -- vision <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]"
             );
         }
 
@@ -142,11 +142,11 @@ impl VisionDemoConfig {
 }
 
 pub fn run_from_args(args: &[String]) -> Result<()> {
-    let config = VisionDemoConfig::from_args(args)?;
+    let config = VisionConfig::from_args(args)?;
     run(config)
 }
 
-pub fn run(config: VisionDemoConfig) -> Result<()> {
+pub fn run(config: VisionConfig) -> Result<()> {
     if !config.use_cpu {
         load_torch_cuda_runtime(config.verbose);
     }
@@ -229,7 +229,7 @@ pub fn run(config: VisionDemoConfig) -> Result<()> {
     }
 
     if config.verbose {
-        info!("Running vision demo — press Ctrl+C to stop");
+        info!("Running vision pipeline — press Ctrl+C to stop");
     }
 
     let mut frame_number: u64 = 0;
@@ -288,7 +288,7 @@ pub fn run(config: VisionDemoConfig) -> Result<()> {
         }
     }
 
-    info!("Stopping vision demo");
+    info!("Stopping vision pipeline");
 
     drop(work_tx);
     let _ = processing_handle.join();

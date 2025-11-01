@@ -26,11 +26,11 @@ services:
     <<: *cuda-app-base
     container_name: cuda-cpp-dojo
 
-  vision-demo:
+  vision:
     <<: *cuda-app-base
     container_name: cuda-cpp-dojo-vision
     command:
-      - vision-demo
+      - vision
       - /dev/video0
       - models/yolov12n-face.torchscript
       - "640"

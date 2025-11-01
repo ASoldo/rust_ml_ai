@@ -1,5 +1,5 @@
 mod cli;
-mod gpu_demo;
+mod gpu;
 
 #[cfg(feature = "with-tch")]
 mod atak;
@@ -8,7 +8,7 @@ mod hud_html;
 #[cfg(feature = "with-tch")]
 mod mnist;
 #[cfg(feature = "with-tch")]
-mod vision_demo;
+mod vision;
 
 fn main() {
     if let Err(err) = run() {
@@ -24,6 +24,6 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    gpu_demo::run();
+    gpu::run();
     Ok(())
 }

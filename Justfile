@@ -43,11 +43,11 @@ mnist-train data_dir=MNIST_DATA_DIR model_out=MNIST_MODEL_PATH epochs='5' batch_
 mnist-predict image_path model_path=MNIST_MODEL_PATH device='':
     {{CARGO}} run -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- mnist-predict {{model_path}} {{image_path}} {{device}}
 
-vision-demo camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
-    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision-demo {{camera}} {{model}} {{width}} {{height}} {{flags}}
+vision camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
+    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}}
 
-nvdec-demo camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='--nvdec':
-    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision-demo {{camera}} {{model}} {{width}} {{height}} {{flags}}
+vision-nvdec camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='--nvdec':
+    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}}
 
 check-cuda:
     mkdir -p target

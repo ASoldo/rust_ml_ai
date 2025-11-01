@@ -45,9 +45,9 @@ docker run --rm -it --gpus all \
   cuda-cpp-dojo:latest
 ```
 
-This launches the default vector-add demo. The image ships with the `with-tch` feature already enabled so TorchScript paths work out of the box.
+This launches the default vector-add sanity check. The image ships with the `with-tch` feature already enabled so TorchScript paths work out of the box.
 
-### Vision demo (web preview)
+### Vision stack (web preview)
 
 The web HUD now ships with two routes:
 
@@ -66,16 +66,16 @@ The web HUD now ships with two routes:
 
 2. Launch the detector with ports published:
    ```bash
-   docker compose up vision-demo
+   docker compose up vision
    ```
 
 3. For ad-hoc runs with custom flags use:
 ```bash
 docker compose run --rm --service-ports cuda-app \
-  vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640
+  vision /dev/video0 models/yolov12n-face.torchscript 640 640
 ```
 
-Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Use `--detector-width/--detector-height` to run inference at a lower resolution than the preview stream, and `--jpeg-quality` (1–100) to trade off encoding speed vs. fidelity. Edit the `vision-demo` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
+Drop `--nvdec` for raw V4L2 capture or append `--cpu` to force CPU inference. Use `--detector-width/--detector-height` to run inference at a lower resolution than the preview stream, and `--jpeg-quality` (1–100) to trade off encoding speed vs. fidelity. Edit the `vision` service in `docker-compose.yml` if you need different defaults (camera URI, model, resolution, flags).
 
 Once the service is up, open `/` to inspect live detections with multi-camera control, or `/atak` to embed the map-only feed in wider command tooling.
 
@@ -83,8 +83,8 @@ Once the service is up, open `/` to inspect live detections with multi-camera co
 
 | Service | Command executed in container | Purpose |
 |---------|---------------------------------|---------|
-| `cuda-app` | `cuda-app` | Vector add demo / sanity check |
-| `vision-demo` | `cuda-app vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640` | TorchScript + webcam HUD |
+| `cuda-app` | `cuda-app` | Vector add sanity check |
+| `vision` | `cuda-app vision /dev/video0 models/yolov12n-face.torchscript 640 640` | TorchScript + webcam HUD |
 
 Run them with `docker compose up <service>` or `docker compose run --rm <service> [...]`.
 
@@ -94,7 +94,7 @@ Run them with `docker compose up <service>` or `docker compose run --rm <service
 - CUDA toolkit (for NVRTC to find its headers and libraries)
 - Rust toolchain (`cargo` and `rustc`)
 
-## GPU demo
+## GPU vector add
 
 ```bash
 cargo run -p cuda-app
@@ -177,7 +177,7 @@ Class probabilities:
   9: 0.000
 ```
 
-## Vision demo (TorchScript + video)
+## Vision pipeline (TorchScript + video)
 
 > This command path mixes TorchScript inference with our Rust/CUDA pipeline so
 > we can experiment with real-time detection.
@@ -217,7 +217,7 @@ Class probabilities:
 
    ```bash
    cargo run --release -p cuda-app --features with-tch -- \
-      vision-demo 0 models/yolov12n-face.torchscript 640 640 --cpu
+      vision 0 models/yolov12n-face.torchscript 640 640 --cpu
    ```
 
    Drop `--cpu` to use CUDA inference. If your camera outputs H.264 you can let
@@ -225,7 +225,7 @@ Class probabilities:
 
    ```bash
    cargo run --release -p cuda-app --features with-tch -- \
-      vision-demo /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
+      vision /dev/video0 models/yolov12n-face.torchscript 640 640 --nvdec
    ```
 
    (Requires an FFmpeg build with CUDA/NVDEC support.) The current pipeline
@@ -273,7 +273,7 @@ Class probabilities:
 
 `nvjpeg-sys` links against NVIDIA's `libnvjpeg`. Install the CUDA toolkit (or at
 least the nvJPEG runtime) and surface the CUDA/LibTorch binaries before running
-the demo. On Arch Linux the following environment works end-to-end:
+the pipeline. On Arch Linux the following environment works end-to-end:
 
 ```bash
 export PATH=/opt/cuda/bin:$PATH

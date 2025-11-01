@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 #[cfg(feature = "with-tch")]
-use crate::{mnist, vision_demo};
+use crate::{mnist, vision};
 
 #[cfg(feature = "with-tch")]
 pub fn handle_commands(args: &[String]) -> Result<bool> {
@@ -14,8 +14,8 @@ pub fn handle_commands(args: &[String]) -> Result<bool> {
             mnist::run_mnist_prediction(args)?;
             Ok(true)
         }
-        Some("vision-demo") => {
-            vision_demo::run_from_args(args)?;
+        Some("vision") => {
+            vision::run_from_args(args)?;
             Ok(true)
         }
         Some("mnist-help") => {
