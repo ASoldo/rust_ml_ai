@@ -31,6 +31,12 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - On compact edge devices we avoid desktop-class dependencies; library loading is gated behind feature flags.
 - Logging is concise: device availability, detector load, HTTP endpoint exposure, and controlled shutdown.
 
+## Resilience & Recovery
+- A watchdog samples heartbeats from capture, processing, and encoding stages; stalled components trigger an automatic pipeline restart.
+- The supervisor loop restarts failed runs (with back-off) while still honouring operator Ctrl+C to shut down cleanly.
+- A ring buffer stores the last 64 annotated frames so clients can recover gaps via `GET /frame.jpg?frame=<seq>`.
+- Streaming endpoints tag payloads with monotonically increasing sequence IDs; SSE adds `id`/`retry` hints so frontline apps can reconnect and resynchronise after telemetry drops.
+
 ## Configuration and Flags
 - `vision <camera-uri> <model-path> <width> <height>` — base invocation.
 - `--cpu` forces CPU inference and CPU overlay for machines without CUDA.
@@ -72,10 +78,10 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 ## Web Interfaces
 - `/` — Recon HUD (3D scene, camera rig widgets, live metrics).
 - `/atak` — ATAK-style map for command operators.
-- `/frame.jpg` — latest annotated JPEG (good for integrating with legacy dashboards).
+- `/frame.jpg` — latest annotated JPEG (good for integrating with legacy dashboards). Append `?frame=<sequence>` to request a specific buffered frame when links hiccup.
 - `/stream.mjpg` — MJPEG stream at ~30 Hz for HUD clients.
 - `/detections` — JSON snapshot of detections, timestamps, FPS.
-- `/stream_detections` — Server-Sent Events stream with periodic detection updates.
+- `/stream_detections` — Server-Sent Events stream with periodic detection updates, sequence IDs, and reconnection hints.
 
 ## CLI Summary
 - `vision ...` — starts the production pipeline.

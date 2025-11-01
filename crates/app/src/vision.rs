@@ -1,6 +1,7 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Arc, Mutex, Once},
     time::Duration,
 };
@@ -17,6 +18,7 @@ use ml_core::{
     detector::Detector,
     tch::{Cuda, Device},
 };
+use serde::Deserialize;
 use serde_json::to_string;
 use tracing::{debug, error, info, warn};
 use video_ingest::{self, Frame, FrameFormat};
@@ -141,12 +143,163 @@ impl VisionConfig {
     }
 }
 
+const WATCHDOG_POLL_INTERVAL_MS: u64 = 500;
+const WATCHDOG_STALE_THRESHOLD_MS: u64 = 1_500;
+const FRAME_HISTORY_CAPACITY: usize = 64;
+static CTRL_HANDLER: Once = Once::new();
+
+#[derive(Copy, Clone, Debug)]
+enum HealthComponent {
+    Capture,
+    Processor,
+    Encoder,
+}
+
+impl HealthComponent {
+    fn label(self) -> &'static str {
+        match self {
+            HealthComponent::Capture => "capture",
+            HealthComponent::Processor => "processing",
+            HealthComponent::Encoder => "encoding",
+        }
+    }
+}
+
+struct PipelineHealth {
+    capture: AtomicU64,
+    processor: AtomicU64,
+    encoder: AtomicU64,
+}
+
+impl PipelineHealth {
+    fn new() -> Self {
+        let now = current_millis();
+        Self {
+            capture: AtomicU64::new(now),
+            processor: AtomicU64::new(now),
+            encoder: AtomicU64::new(now),
+        }
+    }
+
+    fn beat(&self, component: HealthComponent) {
+        let now = current_millis();
+        match component {
+            HealthComponent::Capture => self.capture.store(now, Ordering::Relaxed),
+            HealthComponent::Processor => self.processor.store(now, Ordering::Relaxed),
+            HealthComponent::Encoder => self.encoder.store(now, Ordering::Relaxed),
+        }
+    }
+
+    fn stale_component(&self, now: u64) -> Option<HealthComponent> {
+        if now.saturating_sub(self.capture.load(Ordering::Relaxed)) > WATCHDOG_STALE_THRESHOLD_MS {
+            return Some(HealthComponent::Capture);
+        }
+        if now.saturating_sub(self.processor.load(Ordering::Relaxed)) > WATCHDOG_STALE_THRESHOLD_MS
+        {
+            return Some(HealthComponent::Processor);
+        }
+        if now.saturating_sub(self.encoder.load(Ordering::Relaxed)) > WATCHDOG_STALE_THRESHOLD_MS {
+            return Some(HealthComponent::Encoder);
+        }
+        None
+    }
+}
+
+struct WatchdogState {
+    triggered: AtomicBool,
+    reason: Mutex<Option<HealthComponent>>,
+}
+
+impl WatchdogState {
+    fn new() -> Self {
+        Self {
+            triggered: AtomicBool::new(false),
+            reason: Mutex::new(None),
+        }
+    }
+
+    fn arm(&self, component: HealthComponent) {
+        if let Ok(mut guard) = self.reason.lock() {
+            *guard = Some(component);
+        }
+        self.triggered.store(true, Ordering::SeqCst);
+    }
+
+    fn is_triggered(&self) -> bool {
+        self.triggered.load(Ordering::SeqCst)
+    }
+
+    fn reason(&self) -> Option<HealthComponent> {
+        match self.reason.lock() {
+            Ok(guard) => *guard,
+            Err(_) => None,
+        }
+    }
+}
+
+fn current_millis() -> u64 {
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+enum PipelineOutcome {
+    Graceful,
+    Restart(&'static str),
+}
+
 pub fn run_from_args(args: &[String]) -> Result<()> {
     let config = VisionConfig::from_args(args)?;
     run(config)
 }
 
 pub fn run(config: VisionConfig) -> Result<()> {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let handler_shutdown = shutdown.clone();
+    CTRL_HANDLER.call_once(move || {
+        if let Err(err) = ctrlc::set_handler({
+            let handler_shutdown = handler_shutdown.clone();
+            move || {
+                handler_shutdown.store(true, Ordering::SeqCst);
+            }
+        }) {
+            warn!("Failed to install Ctrl+C handler: {err}");
+        }
+    });
+
+    let mut attempt: u32 = 0;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
+        match run_pipeline_once(config.clone(), shutdown.clone()) {
+            Ok(PipelineOutcome::Graceful) => break,
+            Ok(PipelineOutcome::Restart(reason)) => {
+                attempt = attempt.saturating_add(1);
+                warn!("Pipeline watchdog requested restart (reason: {reason}), attempt #{attempt}");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            Err(err) => {
+                error!("Vision pipeline error: {err:?}");
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                attempt = attempt.saturating_add(1);
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<PipelineOutcome> {
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(PipelineOutcome::Graceful);
+    }
+
     if !config.use_cpu {
         load_torch_cuda_runtime(config.verbose);
     }
@@ -173,6 +326,8 @@ pub fn run(config: VisionConfig) -> Result<()> {
     };
 
     let shared: SharedFrame = Arc::new(Mutex::new(None));
+    let history: FrameHistory =
+        Arc::new(Mutex::new(VecDeque::with_capacity(FRAME_HISTORY_CAPACITY)));
     let tracker = Arc::new(Mutex::new(SimpleTracker::default()));
     let (work_tx, work_rx) = crossbeam_channel::bounded::<FrameTask>(3);
     let (encode_tx, encode_rx) = crossbeam_channel::bounded::<EncodeJob>(3);
@@ -184,7 +339,25 @@ pub fn run(config: VisionConfig) -> Result<()> {
     };
 
     let (init_tx, init_rx) = crossbeam_channel::bounded::<std::result::Result<String, String>>(1);
-    let encode_handle = spawn_encode_worker(shared.clone(), encode_rx);
+
+    let health = Arc::new(PipelineHealth::new());
+    let pipeline_running = Arc::new(AtomicBool::new(true));
+    let watchdog_state = Arc::new(WatchdogState::new());
+
+    let watchdog_handle = spawn_watchdog(
+        health.clone(),
+        pipeline_running.clone(),
+        shutdown.clone(),
+        watchdog_state.clone(),
+    );
+
+    let encode_handle = spawn_encode_worker(
+        shared.clone(),
+        history.clone(),
+        encode_rx,
+        health.clone(),
+        pipeline_running.clone(),
+    );
     let processing_handle = spawn_processing_worker(
         detector_init,
         tracker.clone(),
@@ -193,41 +366,37 @@ pub fn run(config: VisionConfig) -> Result<()> {
         config.jpeg_quality,
         init_tx,
         encode_tx.clone(),
+        health.clone(),
+        pipeline_running.clone(),
+        shutdown.clone(),
     );
 
     match init_rx.recv() {
         Ok(Ok(message)) => info!("{message}"),
         Ok(Err(err)) => {
-            error!("{err}");
+            pipeline_running.store(false, Ordering::SeqCst);
             drop(work_tx);
             drop(encode_tx);
             let _ = processing_handle.join();
             let _ = encode_handle.join();
+            let _ = watchdog_handle.join();
             bail!(err);
         }
         Err(err) => {
+            pipeline_running.store(false, Ordering::SeqCst);
             drop(work_tx);
             drop(encode_tx);
             let _ = processing_handle.join();
             let _ = encode_handle.join();
+            let _ = watchdog_handle.join();
             bail!("Processing thread failed to initialise detector: {err}");
         }
     }
 
-    spawn_preview_server(shared.clone()).context("Failed to start preview server")?;
+    spawn_preview_server(shared.clone(), history.clone())
+        .context("Failed to start preview server")?;
 
     info!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
-
-    let running = Arc::new(AtomicBool::new(true));
-    {
-        let running = running.clone();
-        if let Err(err) = ctrlc::set_handler(move || {
-            running.store(false, Ordering::SeqCst);
-        }) {
-            warn!("Failed to install Ctrl+C handler: {err}");
-        }
-    }
-
     if config.verbose {
         info!("Running vision pipeline — press Ctrl+C to stop");
     }
@@ -236,11 +405,18 @@ pub fn run(config: VisionConfig) -> Result<()> {
     let mut smoothed_fps: f32 = 0.0;
     let mut last_instant = std::time::Instant::now();
     let mut dropped_frames: u64 = 0;
+    let mut restart_reason: Option<&'static str> = None;
 
-    while running.load(Ordering::Relaxed) {
+    while pipeline_running.load(Ordering::Relaxed) {
+        if shutdown.load(Ordering::Relaxed) {
+            pipeline_running.store(false, Ordering::SeqCst);
+            break;
+        }
+
         match receiver.recv() {
             Ok(frame) => match frame {
                 Ok(frame) => {
+                    health.beat(HealthComponent::Capture);
                     frame_number = frame_number.wrapping_add(1);
                     let now = std::time::Instant::now();
                     let elapsed = now.duration_since(last_instant).as_secs_f32();
@@ -272,17 +448,23 @@ pub fn run(config: VisionConfig) -> Result<()> {
                         }
                         Err(TrySendError::Disconnected(_)) => {
                             error!("Processing thread terminated unexpectedly");
+                            restart_reason = Some("processing channel disconnected");
+                            pipeline_running.store(false, Ordering::SeqCst);
                             break;
                         }
                     }
                 }
                 Err(err) => {
                     error!("Capture error: {err}");
+                    restart_reason = Some("capture error");
+                    pipeline_running.store(false, Ordering::SeqCst);
                     break;
                 }
             },
             Err(err) => {
                 error!("Frame channel closed: {err}");
+                restart_reason = Some("capture channel closed");
+                pipeline_running.store(false, Ordering::SeqCst);
                 break;
             }
         }
@@ -290,18 +472,43 @@ pub fn run(config: VisionConfig) -> Result<()> {
 
     info!("Stopping vision pipeline");
 
+    pipeline_running.store(false, Ordering::SeqCst);
     drop(work_tx);
     let _ = processing_handle.join();
     drop(encode_tx);
     let _ = encode_handle.join();
+    let _ = watchdog_handle.join();
 
-    Ok(())
+    if watchdog_state.is_triggered() {
+        let reason = watchdog_state
+            .reason()
+            .map(|component| component.label())
+            .unwrap_or("watchdog");
+        return Ok(PipelineOutcome::Restart(reason));
+    }
+
+    if let Some(reason) = restart_reason {
+        return Ok(PipelineOutcome::Restart(reason));
+    }
+
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(PipelineOutcome::Graceful);
+    }
+
+    Ok(PipelineOutcome::Graceful)
 }
 
 type SharedFrame = Arc<Mutex<Option<FramePacket>>>;
+type FrameHistory = Arc<Mutex<VecDeque<FramePacket>>>;
 
 struct ServerState {
     latest: SharedFrame,
+    history: FrameHistory,
+}
+
+#[derive(Deserialize)]
+struct FrameQuery {
+    frame: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -370,6 +577,9 @@ fn spawn_processing_worker(
     jpeg_quality: i32,
     init_tx: Sender<std::result::Result<String, String>>,
     encode_tx: Sender<EncodeJob>,
+    health: Arc<PipelineHealth>,
+    running: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let detector = match Detector::new(
@@ -393,6 +603,10 @@ fn spawn_processing_worker(
         };
         let vision_runtime = detector.vision_runtime();
         for task in work_rx {
+            if shutdown.load(Ordering::Relaxed) || !running.load(Ordering::Relaxed) {
+                break;
+            }
+            health.beat(HealthComponent::Processor);
             match process_frame(
                 task.frame_number,
                 task.fps,
@@ -406,10 +620,15 @@ fn spawn_processing_worker(
                 Ok(job) => {
                     if encode_tx.send(job).is_err() {
                         error!("Encode channel closed, stopping processing worker");
+                        running.store(false, Ordering::SeqCst);
                         break;
                     }
                 }
-                Err(err) => error!("Frame processing error: {err}"),
+                Err(err) => {
+                    error!("Frame processing error: {err}");
+                    running.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
         }
     })
@@ -417,10 +636,16 @@ fn spawn_processing_worker(
 
 fn spawn_encode_worker(
     shared: SharedFrame,
+    history: FrameHistory,
     encode_rx: Receiver<EncodeJob>,
+    health: Arc<PipelineHealth>,
+    running: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for job in encode_rx {
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
             let packet_result = match job {
                 EncodeJob::Cpu(packet) => Ok(packet),
                 EncodeJob::Gpu(task) => encode_gpu_frame(task),
@@ -428,14 +653,51 @@ fn spawn_encode_worker(
 
             match packet_result {
                 Ok(packet) => {
+                    health.beat(HealthComponent::Encoder);
+                    if let Ok(mut guard) = history.lock() {
+                        guard.push_back(packet.clone());
+                        if guard.len() > FRAME_HISTORY_CAPACITY {
+                            guard.pop_front();
+                        }
+                    }
                     if let Ok(mut guard) = shared.lock() {
                         *guard = Some(packet);
                     }
                 }
-                Err(err) => error!("Encode stage error: {err}"),
+                Err(err) => {
+                    error!("Encode stage error: {err}");
+                    running.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
         }
     })
+}
+
+fn spawn_watchdog(
+    health: Arc<PipelineHealth>,
+    running: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    state: Arc<WatchdogState>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("vision-watchdog".into())
+        .spawn(move || {
+            while running.load(Ordering::Relaxed) && !shutdown.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(WATCHDOG_POLL_INTERVAL_MS));
+                let now = current_millis();
+                if let Some(component) = health.stale_component(now) {
+                    error!(
+                        "Watchdog detected stalled {} stage; requesting pipeline restart",
+                        component.label()
+                    );
+                    state.arm(component);
+                    running.store(false, Ordering::SeqCst);
+                    break;
+                }
+            }
+        })
+        .expect("failed to spawn watchdog thread")
 }
 
 fn process_frame(
@@ -547,8 +809,9 @@ fn process_frame(
     }
 }
 
-fn spawn_preview_server(shared: SharedFrame) -> Result<()> {
+fn spawn_preview_server(shared: SharedFrame, history: FrameHistory) -> Result<()> {
     let server_shared = shared.clone();
+    let server_history = history.clone();
     std::thread::Builder::new()
         .name("vision-preview-server".into())
         .spawn(move || {
@@ -557,6 +820,7 @@ fn spawn_preview_server(shared: SharedFrame) -> Result<()> {
                     App::new()
                         .app_data(web::Data::new(ServerState {
                             latest: server_shared.clone(),
+                            history: server_history.clone(),
                         }))
                         .route("/atak", web::get().to(atak_route))
                         .route("/", web::get().to(index_route))
@@ -579,17 +843,53 @@ fn spawn_preview_server(shared: SharedFrame) -> Result<()> {
     Ok(())
 }
 
-async fn frame_handler(state: web::Data<ServerState>) -> HttpResponse {
-    let guard = match state.latest.lock() {
-        Ok(guard) => guard,
-        Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
-    };
-    if let Some(ref packet) = *guard {
-        HttpResponse::Ok()
+fn latest_frame(shared: &SharedFrame) -> Option<FramePacket> {
+    match shared.lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => None,
+    }
+}
+
+fn history_frame(history: &FrameHistory, frame_number: u64) -> Option<FramePacket> {
+    match history.lock() {
+        Ok(buffer) => buffer
+            .iter()
+            .find(|packet| packet.frame_number == frame_number)
+            .cloned(),
+        Err(_) => None,
+    }
+}
+
+async fn frame_handler(
+    query: web::Query<FrameQuery>,
+    state: web::Data<ServerState>,
+) -> HttpResponse {
+    if let Some(requested) = query.frame {
+        if let Some(packet) = history_frame(&state.history, requested) {
+            return HttpResponse::Ok()
+                .content_type("image/jpeg")
+                .body(packet.jpeg);
+        } else if let Some(latest) = latest_frame(&state.latest) {
+            return HttpResponse::Ok()
+                .append_header((
+                    header::WARNING,
+                    format!(
+                        "299 vision \"frame {} not buffered; returning latest {}\"",
+                        requested, latest.frame_number
+                    ),
+                ))
+                .content_type("image/jpeg")
+                .body(latest.jpeg);
+        } else {
+            return HttpResponse::NoContent().finish();
+        }
+    }
+
+    match latest_frame(&state.latest) {
+        Some(packet) => HttpResponse::Ok()
             .content_type("image/jpeg")
-            .body(packet.jpeg.clone())
-    } else {
-        HttpResponse::NoContent().finish()
+            .body(packet.jpeg),
+        None => HttpResponse::NoContent().finish(),
     }
 }
 
@@ -606,7 +906,11 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
                 .and_then(|guard| guard.clone());
             if let Some(packet) = frame {
                 let mut payload = Vec::with_capacity(packet.jpeg.len() + 64);
-                payload.extend_from_slice(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n");
+                payload.extend_from_slice(b"--frame\r\n");
+                payload.extend_from_slice(
+                    format!("X-Sequence: {}\r\n", packet.frame_number).as_bytes(),
+                );
+                payload.extend_from_slice(b"Content-Type: image/jpeg\r\n\r\n");
                 payload.extend_from_slice(&packet.jpeg);
                 payload.extend_from_slice(b"\r\n");
                 yield Ok::<Bytes, actix_web::Error>(Bytes::from(payload));
@@ -656,6 +960,7 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
 async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {
+        yield Ok::<Bytes, actix_web::Error>(Bytes::from_static(b"retry: 500\n\n"));
         let mut interval = actix_web::rt::time::interval(Duration::from_millis(250));
         loop {
             interval.tick().await;
@@ -673,7 +978,10 @@ async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpRespons
                 };
                 match to_string(&payload) {
                     Ok(json) => {
-                        let mut sse_chunk = String::with_capacity(json.len() + 7);
+                        let mut sse_chunk = String::with_capacity(json.len() + 32);
+                        sse_chunk.push_str("id: ");
+                        sse_chunk.push_str(&packet.frame_number.to_string());
+                        sse_chunk.push('\n');
                         sse_chunk.push_str("data: ");
                         sse_chunk.push_str(&json);
                         sse_chunk.push_str("\n\n");
