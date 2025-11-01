@@ -313,8 +313,6 @@ fn run_vision_demo(args: &[String]) {
             return;
         }
     };
-    load_torch_cuda_runtime();
-
     let mut verbose = false;
     let mut use_cpu = false;
     let mut use_nvdec = false;
@@ -391,6 +389,9 @@ fn run_vision_demo(args: &[String]) {
     if use_cpu && use_nvdec {
         eprintln!("--cpu and --nvdec are mutually exclusive");
         return;
+    }
+    if !use_cpu {
+        load_torch_cuda_runtime(verbose);
     }
     let cuda_available = ml_core::tch::Cuda::is_available();
     let cuda_devices = ml_core::tch::Cuda::device_count();
@@ -1281,7 +1282,7 @@ fn assign_tracks(tracker: &Arc<Mutex<SimpleTracker>>, detections: &mut [Detectio
 }
 
 #[cfg(feature = "with-tch")]
-fn load_torch_cuda_runtime() {
+fn load_torch_cuda_runtime(verbose: bool) {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         let mut handles = Vec::new();
@@ -1292,11 +1293,15 @@ fn load_torch_cuda_runtime() {
         ] {
             match unsafe { Library::open(Some(lib), RTLD_NOW | RTLD_GLOBAL) } {
                 Ok(handle) => {
-                    println!("Loaded {lib}");
+                    if verbose {
+                        println!("Loaded {lib}");
+                    }
                     handles.push(handle);
                 }
                 Err(err) => {
-                    eprintln!("Warning: failed to load {lib}: {err}");
+                    if verbose {
+                        eprintln!("Warning: failed to load {lib}: {err}");
+                    }
                 }
             }
         }
@@ -1305,4 +1310,4 @@ fn load_torch_cuda_runtime() {
 }
 
 #[cfg(not(feature = "with-tch"))]
-fn load_torch_cuda_runtime() {}
+fn load_torch_cuda_runtime(_verbose: bool) {}
