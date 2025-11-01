@@ -20,6 +20,7 @@ use ml_core::{
 };
 use serde::Deserialize;
 use serde_json::to_string;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use video_ingest::{self, Frame, FrameFormat};
 
@@ -393,7 +394,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         }
     }
 
-    spawn_preview_server(shared.clone(), history.clone())
+    let preview_server = spawn_preview_server(shared.clone(), history.clone())
         .context("Failed to start preview server")?;
 
     info!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
@@ -478,6 +479,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     drop(encode_tx);
     let _ = encode_handle.join();
     let _ = watchdog_handle.join();
+    preview_server.stop();
 
     if watchdog_state.is_triggered() {
         let reason = watchdog_state
@@ -504,6 +506,23 @@ type FrameHistory = Arc<Mutex<VecDeque<FramePacket>>>;
 struct ServerState {
     latest: SharedFrame,
     history: FrameHistory,
+}
+
+#[derive(Default)]
+struct PreviewServer {
+    shutdown: Option<oneshot::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PreviewServer {
+    fn stop(self) {
+        if let Some(tx) = self.shutdown {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -809,14 +828,15 @@ fn process_frame(
     }
 }
 
-fn spawn_preview_server(shared: SharedFrame, history: FrameHistory) -> Result<()> {
+fn spawn_preview_server(shared: SharedFrame, history: FrameHistory) -> Result<PreviewServer> {
     let server_shared = shared.clone();
     let server_history = history.clone();
-    std::thread::Builder::new()
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let handle = std::thread::Builder::new()
         .name("vision-preview-server".into())
         .spawn(move || {
             if let Err(err) = actix_web::rt::System::new().block_on(async move {
-                HttpServer::new(move || {
+                let server = HttpServer::new(move || {
                     App::new()
                         .app_data(web::Data::new(ServerState {
                             latest: server_shared.clone(),
@@ -833,14 +853,24 @@ fn spawn_preview_server(shared: SharedFrame, history: FrameHistory) -> Result<()
                         )
                 })
                 .bind(("0.0.0.0", 8080))?
-                .run()
-                .await
+                .run();
+
+                let srv_handle = server.handle();
+                actix_web::rt::spawn(async move {
+                    let _ = shutdown_rx.await;
+                    srv_handle.stop(true).await;
+                });
+
+                server.await
             }) {
                 error!("HTTP server error: {err}");
             }
         })
         .context("Failed to spawn preview server thread")?;
-    Ok(())
+    Ok(PreviewServer {
+        shutdown: Some(shutdown_tx),
+        handle: Some(handle),
+    })
 }
 
 fn latest_frame(shared: &SharedFrame) -> Option<FramePacket> {

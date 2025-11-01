@@ -49,6 +49,9 @@ vision camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' fla
 vision-nvdec camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='--nvdec':
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}}
 
+vision-gdb:
+    sudo gdb -p $(pgrep -f 'vision /dev/video0')
+
 check-cuda:
     mkdir -p target
     /opt/cuda/bin/nvcc tools/check_cuda.cu -o target/check_cuda
