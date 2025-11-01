@@ -507,8 +507,6 @@ impl VisionRuntime {
         }
 
         drop(output_view);
-
-        stream.synchronize()?;
         Ok(())
     }
 
