@@ -276,14 +276,16 @@ least the nvJPEG runtime) and surface the CUDA/LibTorch binaries before running
 the demo. On Arch Linux the following environment works end-to-end:
 
 ```bash
-export CUDA_HOME=/opt/cuda
-export LIBTORCH=/opt/libtorch
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
-export LIBRARY_PATH="$CUDA_HOME/lib64:${LIBRARY_PATH:-}"
-export LIBTORCH_BYPASS_VERSION_CHECK=1
-# Optional: Nsight tools in PATH if you profile
+export PATH=/opt/cuda/bin:$PATH
 export PATH=$PATH:/opt/nsight-systems/2025.3.2/target-linux-x64:/opt/nsight-compute/2025.3.1
+
+export LIBTORCH=/opt/libtorch
+export LD_LIBRARY_PATH=/opt/libtorch/lib:/opt/cuda/lib64:$LD_LIBRARY_PATH
+export TORCH_CUDA_VERSION=cu130
+export LIBTORCH_BYPASS_VERSION_CHECK=0
+
+export CUDA_HOME=/opt/cuda
+export LIBRARY_PATH="$CUDA_HOME/lib64:${LIBRARY_PATH:-}"
 ```
 
 For `--nvdec` you also need an FFmpeg build with CUDA/NVDEC enabled (Arch's
