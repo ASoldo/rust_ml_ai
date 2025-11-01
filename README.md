@@ -3,7 +3,7 @@
 The repository contains a Rust workspace for GPU-first perception. The `vision` binary is the product that will ship to field units; everything else exists to validate drivers, kernels, or training workflows before we deploy. Simple samples (for example the vector add) are diagnostics only—they help developers verify that CUDA, toolchains, and shared libraries resolve correctly on a new machine.
 
 ## Workspace Overview
-- `vision` — production pipeline: capture → detection → annotation → web delivery, tuned for NVIDIA Jetson and A4000 class GPUs.
+- `vision` — production pipeline: capture → detection → annotation → web delivery, tuned for edge devices and mid-to-top tier GPUs with 20 GB+ VRAM.
 - `gpu-kernels` — CUDA kernels built with NVRTC/CUDARC for preprocessing, overlay, and nvJPEG stages.
 - `ml-core` — TorchScript loader plus training helpers (MNIST sample, detector bootstrap utilities).
 - `video-ingest` — capture backends (V4L2 MJPEG fallback and FFmpeg+NVDEC H.264 hardware decode).
@@ -28,7 +28,7 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - NVRTC compiles kernels at runtime so we can tailor preprocessing to the model (resize, normalise, NMS).
 - CUDA streams and nvJPEG keep the annotated surface on-device, minimising PCIe copies.
 - FFmpeg + `h264_cuvid` unlocks NVDEC decode, reducing CPU usage when cameras stream H.264.
-- On Jetson devices we avoid desktop-class dependencies; library loading is gated behind feature flags.
+- On compact edge devices we avoid desktop-class dependencies; library loading is gated behind feature flags.
 - Logging is concise: device availability, detector load, HTTP endpoint exposure, and controlled shutdown.
 
 ## Configuration and Flags
