@@ -44,9 +44,6 @@ mnist-predict image_path model_path=MNIST_MODEL_PATH device='':
     {{CARGO}} run -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- mnist-predict {{model_path}} {{image_path}} {{device}}
 
 vision-demo camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
-    LIBTORCH=/opt/libtorch \
-    LD_LIBRARY_PATH=/opt/libtorch/lib:/opt/cuda/lib64:$LD_LIBRARY_PATH \
-    TORCH_CUDA_VERSION=cu130 \
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision-demo {{camera}} {{model}} {{width}} {{height}} {{flags}}
 
 nvdec-demo camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='--nvdec':
