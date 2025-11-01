@@ -251,10 +251,7 @@ fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
     // Prefer MJPG since many UVC devices expose higher frame rates for the compressed stream.
     let mut fourcc_set = false;
     if let Ok(mjpg) = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G') {
-        if matches!(
-            cap.set(videoio::CAP_PROP_FOURCC, mjpg as f64),
-            Ok(true)
-        ) {
+        if matches!(cap.set(videoio::CAP_PROP_FOURCC, mjpg as f64), Ok(true)) {
             fourcc_set = true;
         }
     }
