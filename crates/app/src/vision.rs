@@ -627,13 +627,13 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
 async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(crate::hud_html::HUD_INDEX_HTML)
+        .body(crate::html::hud_html::HUD_INDEX_HTML)
 }
 
 async fn atak_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(crate::atak::HUD_ATAK_HTML)
+        .body(crate::html::atak::HUD_ATAK_HTML)
 }
 
 async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {

@@ -2,9 +2,7 @@ mod cli;
 mod gpu;
 
 #[cfg(feature = "with-tch")]
-mod atak;
-#[cfg(feature = "with-tch")]
-mod hud_html;
+mod html;
 #[cfg(feature = "with-tch")]
 mod mnist;
 #[cfg(feature = "with-tch")]
