@@ -1,4 +1,4 @@
-x-cuda-app-base: &cuda-app-base
+x-vision-base: &vision-base
   build:
     context: .
     target: runtime
@@ -22,12 +22,12 @@ x-cuda-app-base: &cuda-app-base
   tty: true
 
 services:
-  cuda-app:
-    <<: *cuda-app-base
+  vision-cli:
+    <<: *vision-base
     container_name: cuda-cpp-dojo
 
   vision:
-    <<: *cuda-app-base
+    <<: *vision-base
     container_name: cuda-cpp-dojo-vision
     command:
       - vision

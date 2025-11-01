@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow, bail};
 use ml_core::{TrainingConfig, predict_image_file, tch::Device, train_mnist};
 
-const TRAIN_USAGE: &str = "Usage: cargo run -p cuda-app --features with-tch -- \
+const TRAIN_USAGE: &str = "Usage: cargo run -p vision --features with-tch -- \
 mnist-train <data-dir> <model-out> [epochs] [batch-size] [learning-rate] [--cpu]";
-const PREDICT_USAGE: &str = "Usage: cargo run -p cuda-app --features with-tch -- mnist-predict <model-path> \
+const PREDICT_USAGE: &str = "Usage: cargo run -p vision --features with-tch -- mnist-predict <model-path> \
 <image-path> [--cpu]";
 
 pub fn run_mnist_training(args: &[String]) -> Result<()> {

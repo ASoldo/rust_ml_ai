@@ -1,5 +1,5 @@
 [package]
-name = "cuda-app"
+name = "vision"
 version = "0.1.0"
 edition = "2024"
 

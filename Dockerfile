@@ -55,7 +55,7 @@ COPY . .
 
 RUN cargo fetch
 
-RUN cargo build --release -p cuda-app --features with-tch
+RUN cargo build --release -p vision --features with-tch
 
 FROM nvidia/cuda:${CUDA_BASE} AS runtime
 
@@ -87,11 +87,11 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LIBTORCH}/lib:${LD_LIBRARY_PATH} \
 
 WORKDIR /app
 
-COPY --from=builder /workspace/target/release/cuda-app /usr/local/bin/cuda-app
+COPY --from=builder /workspace/target/release/vision /usr/local/bin/vision
 COPY README.md ./
 COPY html ./html
 COPY images ./images
 
 RUN mkdir -p data models && ldconfig
 
-ENTRYPOINT ["cuda-app"]
+ENTRYPOINT ["vision"]

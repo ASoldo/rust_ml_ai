@@ -1,7 +1,7 @@
 set shell := ["zsh", "-lc"]
 
 CARGO := "cargo"
-BIN := "cuda-app"
+BIN := "vision"
 WITH_TCH_FEATURE := "with-tch"
 MNIST_DATA_DIR := "data/mnist"
 MNIST_MODEL_PATH := "models/mnist-linear.ot"

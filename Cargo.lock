@@ -2492,30 +2492,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cuda-app"
-version = "0.1.0"
-dependencies = [
- "actix-cors",
- "actix-rt",
- "actix-web",
- "anyhow",
- "async-stream",
- "crossbeam-channel",
- "ctrlc",
- "futures-util",
- "gpu-kernels",
- "image",
- "libloading",
- "ml-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "video-ingest",
-]
-
-[[package]]
 name = "cudarc"
 version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6818,6 +6794,30 @@ dependencies = [
  "opencv",
  "thiserror 2.0.17",
  "tokio",
+]
+
+[[package]]
+name = "vision"
+version = "0.1.0"
+dependencies = [
+ "actix-cors",
+ "actix-rt",
+ "actix-web",
+ "anyhow",
+ "async-stream",
+ "crossbeam-channel",
+ "ctrlc",
+ "futures-util",
+ "gpu-kernels",
+ "image",
+ "libloading",
+ "ml-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "video-ingest",
 ]
 
 [[package]]

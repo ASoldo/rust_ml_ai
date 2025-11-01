@@ -39,7 +39,7 @@ impl VisionConfig {
     pub fn from_args(args: &[String]) -> Result<Self> {
         if args.len() < 6 {
             bail!(
-                "Usage: cargo run -p cuda-app --features with-tch -- vision <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]"
+                "Usage: cargo run -p vision --features with-tch -- vision <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]"
             );
         }
 
