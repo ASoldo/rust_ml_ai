@@ -11,6 +11,9 @@ use std::{
 };
 
 #[cfg(feature = "with-tch")]
+use crossbeam_channel::{Receiver, Sender, TrySendError};
+
+#[cfg(feature = "with-tch")]
 use ml_core::{
     TrainingConfig, detector::Detector, predict_image_file, tch::Device, train_mnist,
 };
@@ -99,6 +102,38 @@ struct DetectionsResponse<'a> {
 #[derive(Default)]
 struct SimpleTracker {
     next_id: i64,
+}
+
+#[cfg(feature = "with-tch")]
+struct FrameTask {
+    frame: Frame,
+    frame_number: u64,
+    fps: f32,
+}
+
+#[cfg(feature = "with-tch")]
+struct DetectorInit {
+    model_path: PathBuf,
+    device: Device,
+    input_size: (i64, i64),
+}
+
+#[cfg(feature = "with-tch")]
+struct GpuEncodeJob {
+    runtime: Arc<Mutex<VisionRuntime>>,
+    width: i32,
+    height: i32,
+    summaries: Vec<DetectionSummary>,
+    timestamp_ms: i64,
+    frame_number: u64,
+    fps: f32,
+    jpeg_quality: i32,
+}
+
+#[cfg(feature = "with-tch")]
+enum EncodeJob {
+    Cpu(FramePacket),
+    Gpu(GpuEncodeJob),
 }
 
 fn main() {
@@ -369,23 +404,6 @@ fn run_vision_demo(args: &[String]) {
         Device::cuda_if_available()
     };
 
-    let detector = match Detector::new(
-        &model_path,
-        device,
-        (detector_width as i64, detector_height as i64),
-    ) {
-        Ok(det) => det,
-        Err(err) => {
-            eprintln!("Failed to load detector: {err}");
-            return;
-        }
-    };
-    println!(
-        "Detector loaded on {:?} (vision runtime enabled: {})",
-        detector.device(),
-        detector.uses_gpu_runtime()
-    );
-
     let receiver = if use_nvdec {
         match video_ingest::spawn_nvdec_h264_reader(&camera_uri, (width, height)) {
             Ok(rx) => rx,
@@ -406,6 +424,48 @@ fn run_vision_demo(args: &[String]) {
 
     let shared = Arc::new(Mutex::new(None));
     let tracker = Arc::new(Mutex::new(SimpleTracker::default()));
+    let (work_tx, work_rx) = crossbeam_channel::bounded::<FrameTask>(3);
+    let (encode_tx, encode_rx) = crossbeam_channel::bounded::<EncodeJob>(3);
+
+    let detector_init = DetectorInit {
+        model_path: model_path.clone(),
+        device,
+        input_size: (detector_width as i64, detector_height as i64),
+    };
+    let (init_tx, init_rx) = crossbeam_channel::bounded::<Result<String, String>>(1);
+
+    let encode_handle = spawn_encode_worker(shared.clone(), encode_rx);
+
+    let processing_handle = spawn_processing_worker(
+        detector_init,
+        tracker.clone(),
+        work_rx,
+        verbose,
+        jpeg_quality,
+        init_tx,
+        encode_tx.clone(),
+    );
+
+    match init_rx.recv() {
+        Ok(Ok(message)) => println!("{message}"),
+        Ok(Err(err)) => {
+            eprintln!("{err}");
+            drop(work_tx);
+            drop(encode_tx);
+            let _ = processing_handle.join();
+            let _ = encode_handle.join();
+            return;
+        }
+        Err(err) => {
+            eprintln!("Processing thread failed to initialise detector: {err}");
+            drop(work_tx);
+            drop(encode_tx);
+            let _ = processing_handle.join();
+            let _ = encode_handle.join();
+            return;
+        }
+    }
+
     if let Err(err) = spawn_preview_server(shared.clone()) {
         eprintln!("Failed to start preview server: {err}");
     } else {
@@ -430,6 +490,7 @@ fn run_vision_demo(args: &[String]) {
     let mut frame_number: u64 = 0;
     let mut smoothed_fps: f32 = 0.0;
     let mut last_instant = std::time::Instant::now();
+    let mut dropped_frames: u64 = 0;
 
     while running.load(Ordering::Relaxed) {
         match receiver.recv() {
@@ -448,22 +509,26 @@ fn run_vision_demo(args: &[String]) {
                         };
                     }
 
-                    match process_frame(
+                    let task = FrameTask {
+                        frame,
                         frame_number,
-                        smoothed_fps,
-                        &detector,
-                        &frame,
-                        &tracker,
-                        verbose,
-                        jpeg_quality,
-                        detector.vision_runtime(),
-                    ) {
-                        Ok(packet) => {
-                            if let Ok(mut guard) = shared.lock() {
-                                *guard = Some(packet);
+                        fps: smoothed_fps,
+                    };
+                    match work_tx.try_send(task) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            dropped_frames = dropped_frames.wrapping_add(1);
+                            if verbose {
+                                eprintln!(
+                                    "Dropping frame #{frame_number} (processing backlog, dropped total: {})",
+                                    dropped_frames
+                                );
                             }
                         }
-                        Err(err) => eprintln!("Frame processing error: {err}"),
+                        Err(TrySendError::Disconnected(_)) => {
+                            eprintln!("Processing thread terminated unexpectedly");
+                            break;
+                        }
                     }
                 }
                 Err(err) => {
@@ -486,6 +551,89 @@ fn run_vision_demo(args: &[String]) {
             println!("Stopping vision demo");
         }
     }
+
+    drop(work_tx);
+    let _ = processing_handle.join();
+    drop(encode_tx);
+    let _ = encode_handle.join();
+}
+
+#[cfg(feature = "with-tch")]
+fn spawn_processing_worker(
+    detector_init: DetectorInit,
+    tracker: Arc<Mutex<SimpleTracker>>,
+    work_rx: Receiver<FrameTask>,
+    verbose: bool,
+    jpeg_quality: i32,
+    init_tx: Sender<Result<String, String>>,
+    encode_tx: Sender<EncodeJob>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let detector = match Detector::new(
+            &detector_init.model_path,
+            detector_init.device,
+            detector_init.input_size,
+        ) {
+            Ok(det) => {
+                let message = format!(
+                    "Detector loaded on {:?} (vision runtime enabled: {})",
+                    det.device(),
+                    det.uses_gpu_runtime()
+                );
+                let _ = init_tx.send(Ok(message));
+                det
+            }
+            Err(err) => {
+                let _ = init_tx.send(Err(format!("Failed to load detector: {err}")));
+                return;
+            }
+        };
+        let vision_runtime = detector.vision_runtime();
+        for task in work_rx {
+            match process_frame(
+                task.frame_number,
+                task.fps,
+                &detector,
+                &task.frame,
+                &tracker,
+                verbose,
+                jpeg_quality,
+                vision_runtime.clone(),
+            ) {
+                Ok(job) => {
+                    if encode_tx.send(job).is_err() {
+                        eprintln!("Encode channel closed, stopping processing worker");
+                        break;
+                    }
+                }
+                Err(err) => eprintln!("Frame processing error: {err}"),
+            }
+        }
+    })
+}
+
+#[cfg(feature = "with-tch")]
+fn spawn_encode_worker(
+    shared: SharedFrame,
+    encode_rx: Receiver<EncodeJob>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for job in encode_rx {
+            let packet_result = match job {
+                EncodeJob::Cpu(packet) => Ok(packet),
+                EncodeJob::Gpu(task) => encode_gpu_frame(task),
+            };
+
+            match packet_result {
+                Ok(packet) => {
+                    if let Ok(mut guard) = shared.lock() {
+                        *guard = Some(packet);
+                    }
+                }
+                Err(err) => eprintln!("Encode stage error: {err}"),
+            }
+        }
+    })
 }
 
 #[cfg(feature = "with-tch")]
@@ -498,7 +646,7 @@ fn process_frame(
     verbose: bool,
     jpeg_quality: i32,
     vision: Option<Arc<Mutex<VisionRuntime>>>,
-) -> AnyResult<FramePacket> {
+    ) -> AnyResult<EncodeJob> {
     if !matches!(frame.format, FrameFormat::Bgr8) {
         return Err(anyhow!("unsupported frame format"));
     }
@@ -577,7 +725,7 @@ fn process_frame(
                 )
             })
             .collect();
-        annotate_frame_gpu(
+        Ok(EncodeJob::Gpu(annotate_frame_gpu(
             &runtime,
             frame,
             frame_number,
@@ -587,9 +735,10 @@ fn process_frame(
             &label_positions,
             &labels,
             jpeg_quality,
-        )
+        )?))
     } else {
-        annotate_frame_cpu(frame, frame_number, fps, summaries, jpeg_quality)
+        let packet = annotate_frame_cpu(frame, frame_number, fps, summaries, jpeg_quality)?;
+        Ok(EncodeJob::Cpu(packet))
     }
 }
 
@@ -854,53 +1003,84 @@ fn annotate_frame_gpu(
     label_positions: &[(i32, i32)],
     label_texts: &[String],
     jpeg_quality: i32,
-) -> AnyResult<FramePacket> {
+) -> AnyResult<GpuEncodeJob> {
     let width = frame.width;
     let height = frame.height;
+
+    {
+        let mut guard = runtime
+            .lock()
+            .map_err(|_| anyhow!("vision runtime poisoned"))?;
+
+        let mut boxes_flat = Vec::with_capacity(boxes.len() * 4);
+        for b in boxes {
+            boxes_flat.extend_from_slice(b);
+        }
+
+        let mut label_positions_flat = Vec::with_capacity(label_positions.len() * 2);
+        for (x, y) in label_positions {
+            label_positions_flat.push(*x);
+            label_positions_flat.push(*y);
+        }
+
+        let mut offsets = Vec::with_capacity(label_texts.len());
+        let mut lengths = Vec::with_capacity(label_texts.len());
+        let mut chars = Vec::new();
+        for text in label_texts {
+            offsets.push(chars.len() as i32);
+            let upper = text.to_uppercase();
+            chars.extend_from_slice(upper.as_bytes());
+            lengths.push(upper.len() as i32);
+        }
+
+        let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps).to_uppercase();
+        let info_width = ((info.chars().count() as i32) * 6).min(width as i32);
+        let info_x = (width as i32 - info_width - 4).max(0);
+        let info_y = (height as i32 - 12).max(0);
+
+        guard
+            .annotate(
+                width,
+                height,
+                &boxes_flat,
+                &label_positions_flat,
+                &offsets,
+                &lengths,
+                &chars,
+                info.as_bytes(),
+                (info_x, info_y),
+            )
+            .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
+    }
+
+    Ok(GpuEncodeJob {
+        runtime: runtime.clone(),
+        width,
+        height,
+        summaries,
+        timestamp_ms: frame.timestamp_ms,
+        frame_number,
+        fps,
+        jpeg_quality,
+    })
+}
+
+#[cfg(feature = "with-tch")]
+fn encode_gpu_frame(job: GpuEncodeJob) -> AnyResult<FramePacket> {
+    let GpuEncodeJob {
+        runtime,
+        width,
+        height,
+        summaries,
+        timestamp_ms,
+        frame_number,
+        fps,
+        jpeg_quality,
+    } = job;
 
     let mut guard = runtime
         .lock()
         .map_err(|_| anyhow!("vision runtime poisoned"))?;
-
-    let mut boxes_flat = Vec::with_capacity(boxes.len() * 4);
-    for b in boxes {
-        boxes_flat.extend_from_slice(b);
-    }
-
-    let mut label_positions_flat = Vec::with_capacity(label_positions.len() * 2);
-    for (x, y) in label_positions {
-        label_positions_flat.push(*x);
-        label_positions_flat.push(*y);
-    }
-
-    let mut offsets = Vec::with_capacity(label_texts.len());
-    let mut lengths = Vec::with_capacity(label_texts.len());
-    let mut chars = Vec::new();
-    for text in label_texts {
-        offsets.push(chars.len() as i32);
-        let upper = text.to_uppercase();
-        chars.extend_from_slice(upper.as_bytes());
-        lengths.push(upper.len() as i32);
-    }
-
-    let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps).to_uppercase();
-    let info_width = ((info.chars().count() as i32) * 6).min(width as i32);
-    let info_x = (width as i32 - info_width - 4).max(0);
-    let info_y = (height as i32 - 12).max(0);
-
-    guard
-        .annotate(
-            width,
-            height,
-            &boxes_flat,
-            &label_positions_flat,
-            &offsets,
-            &lengths,
-            &chars,
-            info.as_bytes(),
-            (info_x, info_y),
-        )
-        .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
     let quality = jpeg_quality.clamp(1, 100);
     let buffer = guard
         .encode_jpeg(width, height, quality)
@@ -909,7 +1089,7 @@ fn annotate_frame_gpu(
     Ok(FramePacket {
         jpeg: buffer,
         detections: summaries,
-        timestamp_ms: frame.timestamp_ms,
+        timestamp_ms,
         frame_number,
         fps,
     })

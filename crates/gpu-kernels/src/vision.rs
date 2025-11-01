@@ -34,6 +34,11 @@ pub struct VisionRuntime {
     jpeg_quality: c_int,
 }
 
+// The underlying CUDA and NVJPEG handles are only ever accessed behind a `Mutex` in the
+// application layer, so it is safe to mark the runtime as `Send`/`Sync` for cross-thread use.
+unsafe impl Send for VisionRuntime {}
+unsafe impl Sync for VisionRuntime {}
+
 /// Result of the preprocessing stage.
 pub struct PreprocessOutput {
     pub tensor_ptr: u64,

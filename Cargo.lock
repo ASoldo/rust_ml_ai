@@ -2500,6 +2500,7 @@ dependencies = [
  "actix-web",
  "anyhow",
  "async-stream",
+ "crossbeam-channel",
  "ctrlc",
  "futures-util",
  "gpu-kernels",
