@@ -38,7 +38,10 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - Streaming endpoints tag payloads with monotonically increasing sequence IDs; SSE adds `id`/`retry` hints so frontline apps can reconnect and resynchronise after telemetry drops.
 
 ## Configuration and Flags
-- `vision <camera-uri> <model-path> <width> <height>` — base invocation.
+- `--source <uri>` — preferred way to specify the capture source (e.g. `/dev/video0`, `rtsp://user:pass@ip:554/stream`, `udp://127.0.0.1:5000`). Positional form `<camera-uri>` is still accepted for backwards compatibility.
+- `--model <path>` — TorchScript weights. Positional form `<model-path>` remains valid.
+- `--width <px>` / `--height <px>` — frame resolution to feed through the pipeline (positional form also works).
+- `vision <camera-uri> <model-path> <width> <height>` — legacy positional invocation (still supported).
 - `--cpu` forces CPU inference and CPU overlay for machines without CUDA.
 - `--nvdec` switches capture to FFmpeg/NVDEC (requires H.264 input and CUDA-enabled FFmpeg).
 - `--verbose` prints detection counts, dropped frame diagnostics, and bounding box dumps.
@@ -72,7 +75,28 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - Run the pipeline:
   ```bash
   cargo run --release -p vision --features with-tch -- \
-    vision /dev/video0 models/yolov12n-face.torchscript 640 640 --verbose
+    vision --source /dev/video0 --model models/yolov12n-face.torchscript \
+    --width 640 --height 640 --verbose
+  ```
+
+- Test an RTSP feed (software decode):
+  ```bash
+  cargo run --release -p vision --features with-tch -- \
+    vision --source rtsp://user:pass@camera/stream --model models/yolov12n-face.torchscript \
+    --width 1280 --height 720 --verbose
+  ```
+- Consume a UDP/RTP feed (e.g. produced by `gst-launch-1.0`):
+  ```bash
+  cargo run --release -p vision --features with-tch -- \
+    vision --source udp://127.0.0.1:5000?sprop=Z/QAFpGWgKA9sBagIMDIAAADAAgAAAMA9HixdQ==,aO8xkhk= \
+    --model models/yolov12n-face.torchscript --width 640 --height 480 --verbose
+  ```
+  When streaming H.264 over RTP you must supply the `sprop-parameter-sets` (copy the value printed by your sender; GStreamer shows it in the pipeline caps). Append `?sprop=<base64 SPS>,<base64 PPS>` to the UDP URI and optionally `&payload=<pt>` if you use a payload type other than 96.
+- Prefer NVDEC when targeting H.264 streams on capable GPUs:
+  ```bash
+  cargo run --release -p vision --features with-tch -- \
+    vision --source rtsp://user:pass@camera/stream --model models/yolov12n-face.torchscript \
+    --width 1280 --height 720 --nvdec
   ```
 
 ## Web Interfaces
@@ -93,6 +117,9 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - `cargo run -p vision` (no arguments) executes the GPU vector add sample to validate CUDA setup.
 - `just vision` runs the release build with the `with-tch` feature and default device/model arguments.
 - `just vision-nvdec` toggles NVDEC for H.264 inputs.
+- `just vision-rtsp` runs the pipeline against an RTSP URI (override `source=…` as needed; append `flags='--nvdec'` to force GPU decode).
+- `just gst-rtsp-server` spawns a lightweight RTSP server on port 8554 backed by `/dev/video0` for local testing.
+- `just gst-udp-stream` starts a local GStreamer UDP sender (useful if you want to feed another restreamer).
 - Use `just check`, `just fmt`, and `just lint` to keep the workspace clean.
 
 ## Environment Requirements

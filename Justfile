@@ -52,6 +52,21 @@ vision-nvdec camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='64
 vision-gdb:
     sudo gdb -p $(pgrep -f 'vision /dev/video0')
 
+vision-udp:
+    cargo run --release -p vision --features with-tch -- \
+    vision --source 'udp://127.0.0.1:5000?sprop=Z/QAFpGWgKA9sBagIMDIAAADAAgAAAMA9HixdQ==,aO8xkhk=&payload=96' \
+    --model models/yolov12n-face.torchscript \
+    --width 640 --height 640 \
+    --verbose
+
+gstream:
+    gst-launch-1.0 -v \
+    v4l2src device=/dev/video0 ! \
+    videoconvert ! \
+    x264enc tune=zerolatency bitrate=2000 speed-preset=superfast ! \
+    rtph264pay config-interval=1 pt=96 ! \
+    udpsink host=127.0.0.1 port=5000
+
 check-cuda:
     mkdir -p target
     /opt/cuda/bin/nvcc tools/check_cuda.cu -o target/check_cuda

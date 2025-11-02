@@ -24,9 +24,29 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use video_ingest::{self, Frame, FrameFormat};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    Device,
+    Rtsp,
+    Udp,
+}
+
+impl SourceKind {
+    fn from_uri(uri: &str) -> Self {
+        if uri.starts_with("rtsp://") || uri.starts_with("rtsps://") {
+            SourceKind::Rtsp
+        } else if uri.starts_with("udp://") {
+            SourceKind::Udp
+        } else {
+            SourceKind::Device
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VisionConfig {
     pub camera_uri: String,
+    pub source_kind: SourceKind,
     pub model_path: PathBuf,
     pub width: i32,
     pub height: i32,
@@ -38,32 +58,71 @@ pub struct VisionConfig {
     pub jpeg_quality: i32,
 }
 
+const VISION_USAGE: &str = "Usage: cargo run -p vision --features with-tch -- \
+vision [--source <uri>] [--model <path>] [--width <px>] [--height <px>] \
+[--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] \
+[--jpeg-quality <1-100>]\n\nPositional form is also supported: \
+vision <uri> <model-path> <width> <height> [...flags...]";
+
 impl VisionConfig {
     pub fn from_args(args: &[String]) -> Result<Self> {
-        if args.len() < 6 {
-            bail!(
-                "Usage: cargo run -p vision --features with-tch -- vision <camera-uri> <model-path> <width> <height> [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] [--jpeg-quality <1-100>]"
-            );
+        if args.len() < 3 {
+            bail!(VISION_USAGE);
         }
 
-        let camera_uri = args[2].clone();
-        let model_path = PathBuf::from(&args[3]);
-        let width = args[4]
-            .parse::<i32>()
-            .with_context(|| "width must be an integer".to_string())?;
-        let height = args[5]
-            .parse::<i32>()
-            .with_context(|| "height must be an integer".to_string())?;
+        let mut camera_uri: Option<String> = None;
+        let mut model_path: Option<PathBuf> = None;
+        let mut width: Option<i32> = None;
+        let mut height: Option<i32> = None;
         let mut verbose = false;
         let mut use_cpu = false;
         let mut use_nvdec = false;
-        let mut detector_width = width;
-        let mut detector_height = height;
-        let mut jpeg_quality = 85;
+        let mut detector_width: Option<i32> = None;
+        let mut detector_height: Option<i32> = None;
+        let mut jpeg_quality: Option<i32> = None;
+        let mut positional: Vec<String> = Vec::new();
 
-        let mut idx = 6;
+        let mut idx = 2;
         while idx < args.len() {
             match args[idx].as_str() {
+                "--source" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--source requires a value"))?
+                        .clone();
+                    camera_uri = Some(value);
+                    idx += 1;
+                }
+                "--model" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--model requires a value"))?
+                        .clone();
+                    model_path = Some(PathBuf::from(value));
+                    idx += 1;
+                }
+                "--width" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--width requires a value"))?
+                        .parse::<i32>()
+                        .with_context(|| "--width must be an integer".to_string())?;
+                    width = Some(value);
+                    idx += 1;
+                }
+                "--height" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--height requires a value"))?
+                        .parse::<i32>()
+                        .with_context(|| "--height must be an integer".to_string())?;
+                    height = Some(value);
+                    idx += 1;
+                }
                 "--verbose" => {
                     verbose = true;
                     idx += 1;
@@ -88,7 +147,7 @@ impl VisionConfig {
                     if value <= 0 {
                         bail!("--detector-width must be a positive integer");
                     }
-                    detector_width = value;
+                    detector_width = Some(value);
                     idx += 1;
                 }
                 "--detector-height" => {
@@ -103,7 +162,7 @@ impl VisionConfig {
                     if value <= 0 {
                         bail!("--detector-height must be a positive integer");
                     }
-                    detector_height = value;
+                    detector_height = Some(value);
                     idx += 1;
                 }
                 "--jpeg-quality" => {
@@ -118,19 +177,75 @@ impl VisionConfig {
                     if !(1..=100).contains(&value) {
                         bail!("--jpeg-quality must be an integer between 1 and 100");
                     }
-                    jpeg_quality = value;
+                    jpeg_quality = Some(value);
                     idx += 1;
                 }
-                other => bail!("Unrecognised flag: {other}"),
+                arg if arg.starts_with('-') => {
+                    bail!("Unrecognised flag: {arg}");
+                }
+                other => {
+                    positional.push(other.to_string());
+                    idx += 1;
+                }
             }
         }
+
+        let mut positional = positional.into_iter();
+        if camera_uri.is_none() {
+            camera_uri = positional.next();
+        }
+        if model_path.is_none() {
+            if let Some(path) = positional.next() {
+                model_path = Some(PathBuf::from(path));
+            }
+        }
+        if width.is_none() {
+            if let Some(value) = positional.next() {
+                width = Some(
+                    value
+                        .parse::<i32>()
+                        .with_context(|| "width must be an integer".to_string())?,
+                );
+            }
+        }
+        if height.is_none() {
+            if let Some(value) = positional.next() {
+                height = Some(
+                    value
+                        .parse::<i32>()
+                        .with_context(|| "height must be an integer".to_string())?,
+                );
+            }
+        }
+
+        let camera_uri = camera_uri.ok_or_else(|| {
+            anyhow!("Missing source. Provide --source <uri> or positional <camera-uri>.")
+        })?;
+        let model_path = model_path.ok_or_else(|| {
+            anyhow!("Missing model path. Provide --model <path> or positional <model-path>.")
+        })?;
+        let width = width
+            .ok_or_else(|| anyhow!("Missing width. Provide --width <px> or positional <width>."))?;
+        let height = height.ok_or_else(|| {
+            anyhow!("Missing height. Provide --height <px> or positional <height>.")
+        })?;
 
         if use_cpu && use_nvdec {
             bail!("--cpu and --nvdec are mutually exclusive");
         }
 
+        let (detector_width, detector_height) = match (detector_width, detector_height) {
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, height),
+            (None, Some(h)) => (width, h),
+            (None, None) => Self::default_detector_size(width, height),
+        };
+        let jpeg_quality = jpeg_quality.unwrap_or(85);
+        let source_kind = SourceKind::from_uri(&camera_uri);
+
         Ok(Self {
             camera_uri,
+            source_kind,
             model_path,
             width,
             height,
@@ -142,10 +257,17 @@ impl VisionConfig {
             jpeg_quality,
         })
     }
+
+    fn default_detector_size(width: i32, height: i32) -> (i32, i32) {
+        let max_dim = width.max(height).max(32);
+        let aligned = ((max_dim + 31) / 32) * 32;
+        (aligned, aligned)
+    }
 }
 
 const WATCHDOG_POLL_INTERVAL_MS: u64 = 500;
 const WATCHDOG_STALE_THRESHOLD_MS: u64 = 1_500;
+const WATCHDOG_STARTUP_GRACE_MS: u64 = 5_000;
 const FRAME_HISTORY_CAPACITY: usize = 64;
 static CTRL_HANDLER: Once = Once::new();
 
@@ -175,10 +297,13 @@ struct PipelineHealth {
 impl PipelineHealth {
     fn new() -> Self {
         let now = current_millis();
+        // Seed each stage with a short grace period so the watchdog ignores startup warm-up
+        // (e.g. waiting for the first key frame) but still detects a permanently stalled stage.
+        let grace_deadline = now.saturating_add(WATCHDOG_STARTUP_GRACE_MS);
         Self {
-            capture: AtomicU64::new(now),
-            processor: AtomicU64::new(now),
-            encoder: AtomicU64::new(now),
+            capture: AtomicU64::new(grace_deadline),
+            processor: AtomicU64::new(grace_deadline),
+            encoder: AtomicU64::new(grace_deadline),
         }
     }
 
@@ -318,12 +443,98 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         cuda_available, cuda_devices
     );
 
-    let receiver = if config.use_nvdec {
-        video_ingest::spawn_nvdec_h264_reader(&config.camera_uri, (config.width, config.height))
-            .with_context(|| "Failed to start NVDEC capture".to_string())?
-    } else {
-        video_ingest::spawn_camera_reader(&config.camera_uri, (config.width, config.height))
-            .with_context(|| "Failed to start capture".to_string())?
+    info!(
+        "Capture source: {} ({:?})",
+        config.camera_uri, config.source_kind
+    );
+    info!(
+        "Detector input size: {}x{}",
+        config.detector_width, config.detector_height
+    );
+    if config.detector_width != config.width || config.detector_height != config.height {
+        info!(
+            "Resizing frames for detector (capture {}x{} → detector {}x{})",
+            config.width, config.height, config.detector_width, config.detector_height
+        );
+    }
+
+    let receiver = match config.source_kind {
+        SourceKind::Rtsp => {
+            match video_ingest::spawn_rtsp_reader(
+                &config.camera_uri,
+                (config.width, config.height),
+                config.use_nvdec,
+            ) {
+                Ok(rx) => rx,
+                Err(err) if config.use_nvdec => {
+                    warn!(
+                        "RTSP NVDEC setup failed ({}); falling back to software decode",
+                        err
+                    );
+                    video_ingest::spawn_rtsp_reader(
+                        &config.camera_uri,
+                        (config.width, config.height),
+                        false,
+                    )
+                    .with_context(|| {
+                        "Failed to start RTSP capture (software fallback)".to_string()
+                    })?
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| "Failed to start RTSP capture".to_string());
+                }
+            }
+        }
+        SourceKind::Udp => {
+            match video_ingest::spawn_udp_reader(
+                &config.camera_uri,
+                (config.width, config.height),
+                config.use_nvdec,
+            ) {
+                Ok(rx) => rx,
+                Err(err) if config.use_nvdec => {
+                    warn!(
+                        "UDP NVDEC setup failed ({}); falling back to software decode",
+                        err
+                    );
+                    video_ingest::spawn_udp_reader(
+                        &config.camera_uri,
+                        (config.width, config.height),
+                        false,
+                    )
+                    .with_context(|| {
+                        "Failed to start UDP capture (software fallback)".to_string()
+                    })?
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| "Failed to start UDP capture".to_string());
+                }
+            }
+        }
+        SourceKind::Device => {
+            if config.use_nvdec {
+                match video_ingest::spawn_nvdec_h264_reader(
+                    &config.camera_uri,
+                    (config.width, config.height),
+                ) {
+                    Ok(rx) => rx,
+                    Err(err) => {
+                        warn!(
+                            "NVDEC capture failed ({}); falling back to V4L software capture",
+                            err
+                        );
+                        video_ingest::spawn_camera_reader(
+                            &config.camera_uri,
+                            (config.width, config.height),
+                        )
+                        .with_context(|| "Failed to start capture".to_string())?
+                    }
+                }
+            } else {
+                video_ingest::spawn_camera_reader(&config.camera_uri, (config.width, config.height))
+                    .with_context(|| "Failed to start capture".to_string())?
+            }
+        }
     };
 
     let shared: SharedFrame = Arc::new(Mutex::new(None));
@@ -429,6 +640,13 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         } else {
                             0.9 * smoothed_fps + 0.1 * instant
                         };
+                    }
+
+                    if frame_number % 30 == 0 {
+                        info!(
+                            "Capture heartbeat: frame #{}, {:.1} fps, ts={}",
+                            frame_number, smoothed_fps, frame.timestamp_ms
+                        );
                     }
 
                     let task = FrameTask {
@@ -644,7 +862,7 @@ fn spawn_processing_worker(
                     }
                 }
                 Err(err) => {
-                    error!("Frame processing error: {err}");
+                    error!("Frame processing error: {err:?}");
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
