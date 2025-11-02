@@ -47,6 +47,10 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - `--verbose` prints detection counts, dropped frame diagnostics, and bounding box dumps.
 - `--detector-width/--detector-height` run inference at a lower resolution than the preview stream.
 - `--jpeg-quality <1-100>` tunes nvJPEG output (higher is better fidelity, lower is faster/lighter).
+- `--processors <n>` spins up that many concurrent detector workers (default `1`). Each worker maintains its own TorchScript module and CUDA state.
+- `--batch-size <n>` lets a worker run up to `n` frames through the detector in a single call (default `1`). Higher values trade latency for throughput and only make sense on GPUs with ample compute.
+
+> **Tip (edge devices):** leave `--processors` and `--batch-size` at their defaults on entry-level hardware. The Yolov12n TorchScript export already saturates smaller GPUs at ~15 FPS; extra workers simply wait on the same CUDA kernels. Dial these knobs up only when profiling shows unused GPU headroom.
 
 ## Running the Vision Service
 
@@ -120,6 +124,7 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - `just vision-rtsp` runs the pipeline against an RTSP URI (override `source=…` as needed; append `flags='--nvdec'` to force GPU decode).
 - `just gst-rtsp-server` spawns a lightweight RTSP server on port 8554 backed by `/dev/video0` for local testing.
 - `just gst-udp-stream` starts a local GStreamer UDP sender (useful if you want to feed another restreamer).
+- `just vision-batch` showcases a heavier configuration (`--processors 4 --batch-size 2`) for benchmarking on larger GPUs.
 - Use `just check`, `just fmt`, and `just lint` to keep the workspace clean.
 
 ## Environment Requirements
@@ -139,7 +144,7 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - No CUDA devices: set `--cpu`, confirm drivers, or run the vector add sanity check.
 - NVDEC errors: confirm the camera really outputs H.264 and that FFmpeg was built with CUDA.
 - CUDA kernel errors: rebuild with `--verbose` to capture stack traces, verify `libtorch_cuda*.so` preload works (`vision` automatically attempts to load them when CUDA mode is selected).
-- High latency: raise the worker queue depth or lower inference resolution via `--detector-width/--detector-height`.
+- High latency: lower inference resolution via `--detector-width/--detector-height`, reduce `--batch-size`, or keep `--processors` at 1 on underpowered GPUs.
 
 ## Licensing
 - The workspace is distributed under MIT (see `LICENSE`). Honor third-party licenses for CUDA, FFmpeg, OpenCV, LibTorch, and any model checkpoints.
