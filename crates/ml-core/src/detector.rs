@@ -132,6 +132,12 @@ impl Detector {
 
     /// Executes the TorchScript module and performs basic confidence filtering.
     pub fn infer(&self, input: &Tensor) -> Result<DetectionBatch> {
+        let mut batches = self.infer_batch(input)?;
+        Ok(batches.pop().unwrap_or_default())
+    }
+
+    /// Batched variant of [`infer`]; accepts an input tensor with batch dimension.
+    pub fn infer_batch(&self, input: &Tensor) -> Result<Vec<DetectionBatch>> {
         let output = no_grad(|| self.module.forward_ts(&[input]))?;
         let shape = output.size();
         if shape.len() != 3 {
@@ -139,38 +145,40 @@ impl Detector {
         }
         let batch = shape[0];
         let channels = shape[1];
-        let _num_preds = shape[2];
-        if batch != 1 {
-            anyhow::bail!("detector expected batch=1 but received {batch}");
-        }
         if channels < 5 {
             anyhow::bail!(
                 "detector output requires at least 5 channels (x,y,w,h,conf), got {channels}"
             );
         }
 
-        let preds = output.squeeze_dim(0).permute([1, 0]).contiguous();
+        let outputs = output.permute([0, 2, 1]).contiguous();
+        let mut results = Vec::with_capacity(batch as usize);
 
-        let detections = match self.device {
-            Device::Cuda(_) => {
-                if let Some(rows) = self.process_gpu(preds)? {
-                    self.rows_to_detections(rows, false)?
-                } else {
-                    Vec::new()
+        for idx in 0..batch {
+            let preds = outputs.get(idx);
+            let detections = match self.device {
+                Device::Cuda(_) => {
+                    if let Some(rows) = self.process_gpu_single(preds.copy())? {
+                        self.rows_to_detections(rows, false)?
+                    } else {
+                        Vec::new()
+                    }
                 }
-            }
-            _ => {
-                let rows: Vec<Vec<f32>> = Vec::<Vec<f32>>::try_from(&preds.to_device(Device::Cpu))?;
-                let mut detections = self.rows_to_detections(rows, true)?;
-                apply_nms(&mut detections, 0.45);
-                detections
-            }
-        };
+                _ => {
+                    let rows: Vec<Vec<f32>> =
+                        Vec::<Vec<f32>>::try_from(&preds.to_device(Device::Cpu))?;
+                    let mut detections = self.rows_to_detections(rows, true)?;
+                    apply_nms(&mut detections, 0.45);
+                    detections
+                }
+            };
+            results.push(DetectionBatch { detections });
+        }
 
-        Ok(DetectionBatch { detections })
+        Ok(results)
     }
 
-    fn process_gpu(&self, preds: Tensor) -> Result<Option<Vec<Vec<f32>>>> {
+    fn process_gpu_single(&self, preds: Tensor) -> Result<Option<Vec<Vec<f32>>>> {
         let device = self.device;
         if !matches!(device, Device::Cuda(_)) {
             return Ok(None);

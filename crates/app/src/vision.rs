@@ -10,13 +10,14 @@ use actix_web::web::Bytes;
 use actix_web::{App, HttpResponse, HttpServer, http::header, web};
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
 use gpu_kernels::VisionRuntime;
 use image::{DynamicImage, ImageBuffer, Rgba, codecs::jpeg::JpegEncoder};
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use ml_core::{
+    DetectionBatch,
     detector::Detector,
-    tch::{Cuda, Device},
+    tch::{Cuda, Device, Tensor},
 };
 use serde::Deserialize;
 use serde_json::to_string;
@@ -56,13 +57,15 @@ pub struct VisionConfig {
     pub detector_width: i32,
     pub detector_height: i32,
     pub jpeg_quality: i32,
+    pub processor_workers: usize,
+    pub batch_size: usize,
 }
 
 const VISION_USAGE: &str = "Usage: cargo run -p vision --features with-tch -- \
 vision [--source <uri>] [--model <path>] [--width <px>] [--height <px>] \
 [--cpu] [--nvdec] [--verbose] [--detector-width <px>] [--detector-height <px>] \
-[--jpeg-quality <1-100>]\n\nPositional form is also supported: \
-vision <uri> <model-path> <width> <height> [...flags...]";
+[--jpeg-quality <1-100>] [--processors <n>] [--batch-size <n>]\n\nPositional form is \
+also supported: vision <uri> <model-path> <width> <height> [...flags...]";
 
 impl VisionConfig {
     pub fn from_args(args: &[String]) -> Result<Self> {
@@ -80,6 +83,8 @@ impl VisionConfig {
         let mut detector_width: Option<i32> = None;
         let mut detector_height: Option<i32> = None;
         let mut jpeg_quality: Option<i32> = None;
+        let mut processor_workers: Option<usize> = None;
+        let mut batch_size: Option<usize> = None;
         let mut positional: Vec<String> = Vec::new();
 
         let mut idx = 2;
@@ -165,6 +170,32 @@ impl VisionConfig {
                     detector_height = Some(value);
                     idx += 1;
                 }
+                "--processors" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--processors requires a value"))?
+                        .parse::<usize>()
+                        .with_context(|| "--processors must be a positive integer".to_string())?;
+                    if value == 0 {
+                        bail!("--processors must be at least 1");
+                    }
+                    processor_workers = Some(value);
+                    idx += 1;
+                }
+                "--batch-size" => {
+                    idx += 1;
+                    let value = args
+                        .get(idx)
+                        .ok_or_else(|| anyhow!("--batch-size requires a value"))?
+                        .parse::<usize>()
+                        .with_context(|| "--batch-size must be a positive integer".to_string())?;
+                    if value == 0 {
+                        bail!("--batch-size must be at least 1");
+                    }
+                    batch_size = Some(value);
+                    idx += 1;
+                }
                 "--jpeg-quality" => {
                     idx += 1;
                     let value = args
@@ -242,6 +273,8 @@ impl VisionConfig {
         };
         let jpeg_quality = jpeg_quality.unwrap_or(85);
         let source_kind = SourceKind::from_uri(&camera_uri);
+        let processor_workers = processor_workers.unwrap_or(1);
+        let batch_size = batch_size.unwrap_or(1);
 
         Ok(Self {
             camera_uri,
@@ -255,6 +288,8 @@ impl VisionConfig {
             detector_width,
             detector_height,
             jpeg_quality,
+            processor_workers,
+            batch_size,
         })
     }
 
@@ -457,6 +492,10 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
             config.width, config.height, config.detector_width, config.detector_height
         );
     }
+    info!(
+        "Processing workers: {} (batch size: {})",
+        config.processor_workers, config.batch_size
+    );
 
     let receiver = match config.source_kind {
         SourceKind::Rtsp => {
@@ -541,8 +580,16 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     let history: FrameHistory =
         Arc::new(Mutex::new(VecDeque::with_capacity(FRAME_HISTORY_CAPACITY)));
     let tracker = Arc::new(Mutex::new(SimpleTracker::default()));
-    let (work_tx, work_rx) = crossbeam_channel::bounded::<FrameTask>(3);
-    let (encode_tx, encode_rx) = crossbeam_channel::bounded::<EncodeJob>(3);
+    let processing_queue = std::cmp::max(
+        3,
+        config
+            .processor_workers
+            .saturating_mul(config.batch_size)
+            .saturating_mul(2),
+    );
+    let encoding_queue = std::cmp::max(3, config.processor_workers.saturating_mul(2));
+    let (work_tx, work_rx) = crossbeam_channel::bounded::<FrameTask>(processing_queue);
+    let (encode_tx, encode_rx) = crossbeam_channel::bounded::<EncodeJob>(encoding_queue);
 
     let detector_init = DetectorInit {
         model_path: config.model_path.clone(),
@@ -550,7 +597,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         input_size: (config.detector_width as i64, config.detector_height as i64),
     };
 
-    let (init_tx, init_rx) = crossbeam_channel::bounded::<std::result::Result<String, String>>(1);
+    let (init_tx, init_rx) =
+        crossbeam_channel::bounded::<std::result::Result<String, String>>(config.processor_workers);
 
     let health = Arc::new(PipelineHealth::new());
     let pipeline_running = Arc::new(AtomicBool::new(true));
@@ -570,39 +618,60 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         health.clone(),
         pipeline_running.clone(),
     );
-    let processing_handle = spawn_processing_worker(
-        detector_init,
-        tracker.clone(),
-        work_rx,
-        config.verbose,
-        config.jpeg_quality,
-        init_tx,
-        encode_tx.clone(),
-        health.clone(),
-        pipeline_running.clone(),
-        shutdown.clone(),
-    );
+    let mut processing_handles = Vec::with_capacity(config.processor_workers);
+    for worker_index in 0..config.processor_workers {
+        let worker_rx = work_rx.clone();
+        let worker_init_tx = init_tx.clone();
+        let worker_encode_tx = encode_tx.clone();
+        let handle = spawn_processing_worker(
+            detector_init.clone(),
+            tracker.clone(),
+            worker_rx,
+            config.verbose,
+            config.jpeg_quality,
+            worker_init_tx,
+            worker_encode_tx,
+            health.clone(),
+            pipeline_running.clone(),
+            shutdown.clone(),
+            config.batch_size,
+            worker_index,
+        );
+        processing_handles.push(handle);
+    }
+    drop(init_tx);
+    drop(work_rx);
 
-    match init_rx.recv() {
-        Ok(Ok(message)) => info!("{message}"),
-        Ok(Err(err)) => {
-            pipeline_running.store(false, Ordering::SeqCst);
-            drop(work_tx);
-            drop(encode_tx);
-            let _ = processing_handle.join();
-            let _ = encode_handle.join();
-            let _ = watchdog_handle.join();
-            bail!(err);
+    let mut init_messages = Vec::new();
+    for _ in 0..config.processor_workers {
+        match init_rx.recv() {
+            Ok(Ok(message)) => init_messages.push(message),
+            Ok(Err(err)) => {
+                pipeline_running.store(false, Ordering::SeqCst);
+                drop(work_tx);
+                drop(encode_tx);
+                for handle in processing_handles.drain(..) {
+                    let _ = handle.join();
+                }
+                let _ = encode_handle.join();
+                let _ = watchdog_handle.join();
+                bail!(err);
+            }
+            Err(err) => {
+                pipeline_running.store(false, Ordering::SeqCst);
+                drop(work_tx);
+                drop(encode_tx);
+                for handle in processing_handles.drain(..) {
+                    let _ = handle.join();
+                }
+                let _ = encode_handle.join();
+                let _ = watchdog_handle.join();
+                bail!("Processing thread failed to initialise detector: {err}");
+            }
         }
-        Err(err) => {
-            pipeline_running.store(false, Ordering::SeqCst);
-            drop(work_tx);
-            drop(encode_tx);
-            let _ = processing_handle.join();
-            let _ = encode_handle.join();
-            let _ = watchdog_handle.join();
-            bail!("Processing thread failed to initialise detector: {err}");
-        }
+    }
+    for message in init_messages {
+        info!("{message}");
     }
 
     let preview_server = spawn_preview_server(shared.clone(), history.clone())
@@ -693,7 +762,9 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
 
     pipeline_running.store(false, Ordering::SeqCst);
     drop(work_tx);
-    let _ = processing_handle.join();
+    for handle in processing_handles {
+        let _ = handle.join();
+    }
     drop(encode_tx);
     let _ = encode_handle.join();
     let _ = watchdog_handle.join();
@@ -784,6 +855,7 @@ struct FrameTask {
     fps: f32,
 }
 
+#[derive(Clone)]
 struct DetectorInit {
     model_path: PathBuf,
     device: Device,
@@ -817,6 +889,8 @@ fn spawn_processing_worker(
     health: Arc<PipelineHealth>,
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    batch_size: usize,
+    worker_index: usize,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let detector = match Detector::new(
@@ -824,41 +898,65 @@ fn spawn_processing_worker(
             detector_init.device,
             detector_init.input_size,
         ) {
-            Ok(det) => {
-                let message = format!(
-                    "Detector loaded on {:?} (vision runtime enabled: {})",
-                    det.device(),
-                    det.uses_gpu_runtime()
-                );
-                let _ = init_tx.send(Ok(message));
-                det
-            }
+            Ok(det) => match init_tx.send(Ok(format!(
+                "worker #{worker_index}: detector loaded on {:?} (vision runtime enabled: {})",
+                det.device(),
+                det.uses_gpu_runtime()
+            ))) {
+                Ok(_) => det,
+                Err(_) => return,
+            },
             Err(err) => {
-                let _ = init_tx.send(Err(format!("Failed to load detector: {err}")));
+                let _ = init_tx.send(Err(format!(
+                    "worker #{worker_index}: failed to load detector: {err}"
+                )));
                 return;
             }
         };
+        drop(init_tx);
+
         let vision_runtime = detector.vision_runtime();
-        for task in work_rx {
+        let max_batch = batch_size.max(1);
+
+        'outer: loop {
             if shutdown.load(Ordering::Relaxed) || !running.load(Ordering::Relaxed) {
                 break;
             }
-            health.beat(HealthComponent::Processor);
-            match process_frame(
-                task.frame_number,
-                task.fps,
+
+            let first_task = match work_rx.recv() {
+                Ok(task) => task,
+                Err(_) => break,
+            };
+
+            let mut batch = Vec::with_capacity(max_batch);
+            batch.push(first_task);
+
+            if max_batch > 1 {
+                while batch.len() < max_batch {
+                    match work_rx.try_recv() {
+                        Ok(task) => batch.push(task),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => break,
+                    }
+                }
+            }
+
+            match process_frame_batch(
                 &detector,
-                &task.frame,
                 &tracker,
+                batch,
                 verbose,
                 jpeg_quality,
                 vision_runtime.clone(),
             ) {
-                Ok(job) => {
-                    if encode_tx.send(job).is_err() {
-                        error!("Encode channel closed, stopping processing worker");
-                        running.store(false, Ordering::SeqCst);
-                        break;
+                Ok(jobs) => {
+                    for job in jobs {
+                        health.beat(HealthComponent::Processor);
+                        if encode_tx.send(job).is_err() {
+                            error!("Encode channel closed, stopping processing worker");
+                            running.store(false, Ordering::SeqCst);
+                            break 'outer;
+                        }
                     }
                 }
                 Err(err) => {
@@ -937,31 +1035,81 @@ fn spawn_watchdog(
         .expect("failed to spawn watchdog thread")
 }
 
-fn process_frame(
-    frame_number: u64,
-    fps: f32,
+fn process_frame_batch(
     detector: &Detector,
-    frame: &Frame,
     tracker: &Arc<Mutex<SimpleTracker>>,
+    mut tasks: Vec<FrameTask>,
+    verbose: bool,
+    jpeg_quality: i32,
+    vision: Option<Arc<Mutex<VisionRuntime>>>,
+) -> Result<Vec<EncodeJob>> {
+    if tasks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut tensors = Vec::with_capacity(tasks.len());
+    for task in tasks.iter() {
+        let frame = &task.frame;
+        if !matches!(frame.format, FrameFormat::Bgr8) {
+            bail!("unsupported frame format");
+        }
+        let tensor = detector
+            .bgr_to_tensor(&frame.data, frame.width, frame.height)
+            .with_context(|| "Failed to prepare tensor from frame")?;
+        tensors.push(tensor.copy());
+    }
+
+    let batched_input = if tensors.len() == 1 {
+        tensors.remove(0)
+    } else {
+        Tensor::cat(&tensors, 0)
+    };
+
+    let detection_batches = detector
+        .infer_batch(&batched_input)
+        .with_context(|| "Detector inference failed")?;
+
+    if detection_batches.len() != tasks.len() {
+        bail!(
+            "Detector returned {} batch(es) but {} frame(s) were submitted",
+            detection_batches.len(),
+            tasks.len()
+        );
+    }
+
+    let mut jobs = Vec::with_capacity(tasks.len());
+    for (task, detections) in tasks.drain(..).zip(detection_batches.into_iter()) {
+        jobs.push(finalize_frame(
+            detector,
+            tracker,
+            &task,
+            detections,
+            verbose,
+            jpeg_quality,
+            vision.clone(),
+        )?);
+    }
+
+    Ok(jobs)
+}
+
+fn finalize_frame(
+    detector: &Detector,
+    tracker: &Arc<Mutex<SimpleTracker>>,
+    task: &FrameTask,
+    detections: DetectionBatch,
     verbose: bool,
     jpeg_quality: i32,
     vision: Option<Arc<Mutex<VisionRuntime>>>,
 ) -> Result<EncodeJob> {
-    if !matches!(frame.format, FrameFormat::Bgr8) {
-        bail!("unsupported frame format");
-    }
-    let tensor = detector
-        .bgr_to_tensor(&frame.data, frame.width, frame.height)
-        .with_context(|| "Failed to prepare tensor from frame")?;
-    let detections = detector
-        .infer(&tensor)
-        .with_context(|| "Detector inference failed")?;
+    let frame = &task.frame;
     if verbose {
         if detections.detections.is_empty() {
-            debug!("frame #{frame_number}: no detections");
+            debug!("frame #{}: no detections", task.frame_number);
         } else {
             debug!(
-                "frame #{frame_number}: {} detection(s)",
+                "frame #{}: {} detection(s)",
+                task.frame_number,
                 detections.detections.len()
             );
             for (idx, det) in detections.detections.iter().enumerate() {
@@ -972,6 +1120,7 @@ fn process_frame(
             }
         }
     }
+
     let mut summaries = Vec::with_capacity(detections.detections.len());
     let mut label_positions = Vec::with_capacity(detections.detections.len());
     let mut boxes_px = Vec::with_capacity(detections.detections.len());
@@ -1032,8 +1181,8 @@ fn process_frame(
         Ok(EncodeJob::Gpu(annotate_frame_gpu(
             &runtime,
             frame,
-            frame_number,
-            fps,
+            task.frame_number,
+            task.fps,
             summaries.clone(),
             &boxes_px,
             &label_positions,
@@ -1041,7 +1190,8 @@ fn process_frame(
             jpeg_quality,
         )?))
     } else {
-        let packet = annotate_frame_cpu(frame, frame_number, fps, summaries, jpeg_quality)?;
+        let packet =
+            annotate_frame_cpu(frame, task.frame_number, task.fps, summaries, jpeg_quality)?;
         Ok(EncodeJob::Cpu(packet))
     }
 }
