@@ -43,10 +43,9 @@ mnist-train data_dir=MNIST_DATA_DIR model_out=MNIST_MODEL_PATH epochs='5' batch_
 mnist-predict image_path model_path=MNIST_MODEL_PATH device='':
     {{CARGO}} run -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- mnist-predict {{model_path}} {{image_path}} {{device}}
 
-
 # vision
 vision camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
-    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}} --processors 1 --batch-size 1
+    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}} --processors 2 --batch-size 2
 
 vision-batch camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
@@ -65,6 +64,13 @@ vision-udp:
     --width 640 --height 640 \
     --verbose
 
+vision-ptz:
+    cargo run --release -p vision --features with-tch -- \
+    vision --source "udp://127.0.0.1:5000?sprop=Z/QAFpGWgKA9sBagIMDIAAADAAgAAAMA9HixdQ==,aO8xkhk=&payload=96" \
+    --model models/yolov12n-face.torchscript \
+    --width 640 --height 640 \
+    --verbose  --processors 2 --batch-size 2
+
 gstream:
     gst-launch-1.0 -v \
     v4l2src device=/dev/video0 ! \
@@ -72,6 +78,15 @@ gstream:
     x264enc tune=zerolatency bitrate=2000 speed-preset=superfast ! \
     rtph264pay config-interval=1 pt=96 ! \
     udpsink host=127.0.0.1 port=5000
+
+gstreamer:
+    gst-launch-1.0 -v \
+    rtspsrc location="rtsp://root:root@192.168.0.90/axis-media/media.amp?resolution=1920x1080&fps=60" \
+    latency=100 protocols=udp timeout=5000000 ! \
+    rtph264depay ! h264parse config-interval=-1 ! \
+    video/x-h264,stream-format=byte-stream,alignment=au ! \
+    rtph264pay pt=96 config-interval=1 ! \
+    udpsink host=127.0.0.1 port=5000 sync=false async=false
 
 check-cuda:
     mkdir -p target

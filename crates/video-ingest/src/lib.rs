@@ -157,7 +157,7 @@ pub fn spawn_udp_reader(
         .arg("-loglevel")
         .arg("error")
         .arg("-protocol_whitelist")
-        .arg("file,udp,rtp,fd")
+        .arg("file,udp,rtp,fd,pipe")
         .arg("-fflags")
         .arg("+genpts+discardcorrupt")
         .arg("-flags")
