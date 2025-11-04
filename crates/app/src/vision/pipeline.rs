@@ -29,12 +29,6 @@ use crate::vision::{
     watchdog::{HealthComponent, PipelineHealth, WatchdogState, spawn_watchdog},
 };
 
-/// Parse CLI arguments, build a [`VisionConfig`], and execute the pipeline.
-pub fn run_from_args(args: &[String]) -> Result<()> {
-    let config = VisionConfig::from_args(args)?;
-    run(config)
-}
-
 /// Run the vision pipeline, automatically restarting on recoverable faults.
 pub fn run(config: VisionConfig) -> Result<()> {
     static CTRL_HANDLER: Once = Once::new();

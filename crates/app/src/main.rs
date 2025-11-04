@@ -27,8 +27,8 @@ fn main() {
 /// snappy during bring-up.
 fn run() -> anyhow::Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
-    let args: Vec<String> = std::env::args().collect();
-    if cli::handle_commands(&args)? {
+    #[cfg(feature = "with-tch")]
+    if cli::dispatch()? {
         return Ok(());
     }
 

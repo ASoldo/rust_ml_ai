@@ -7,41 +7,74 @@
 use anyhow::Result;
 
 #[cfg(feature = "with-tch")]
-use crate::{mnist, vision};
+use clap::{Parser, Subcommand};
 
 #[cfg(feature = "with-tch")]
-/// Routes the CLI arguments to the correct subsystem.
+use crate::{
+    mnist::{self, MnistPredictArgs, MnistTrainArgs},
+    vision::{self, VisionCliArgs, VisionConfig},
+};
+
+/// Parse CLI arguments and run the requested subcommand.
 ///
-/// The function returns `Ok(true)` when a subcommand consumed the invocation,
-/// allowing the caller to short-circuit fallback behaviour (e.g. running the GPU
-/// demo). When no recognised subcommand is present the caller continues with
-/// default startup.
-pub fn handle_commands(args: &[String]) -> Result<bool> {
-    match args.get(1).map(|s| s.as_str()) {
-        Some("mnist-train") => {
+/// Returns `Ok(true)` when a subcommand consumed the invocation so the caller
+/// can short-circuit fallback behaviour (e.g. running the GPU demo). When no
+/// subcommand is provided the caller continues with default startup.
+#[cfg(feature = "with-tch")]
+pub fn dispatch() -> Result<bool> {
+    let cli = AppCli::parse();
+    match cli.command {
+        Some(Command::Vision(args)) => {
+            let config = VisionConfig::try_from(args)?;
+            vision::run(config)?;
+            Ok(true)
+        }
+        Some(Command::MnistTrain(args)) => {
             mnist::run_mnist_training(args)?;
             Ok(true)
         }
-        Some("mnist-predict") => {
+        Some(Command::MnistPredict(args)) => {
             mnist::run_mnist_prediction(args)?;
             Ok(true)
         }
-        Some("vision") => {
-            vision::run_from_args(args)?;
-            Ok(true)
-        }
-        Some("mnist-help") => {
+        Some(Command::MnistHelp) => {
             mnist::print_help();
             Ok(true)
         }
-        _ => Ok(false),
+        None => Ok(false),
     }
 }
 
-#[cfg(not(feature = "with-tch"))]
 /// No-op CLI handler used when the binary is compiled without deep-learning
 /// support. We keep the signature identical so the call-site does not require
 /// feature-specific branching.
-pub fn handle_commands(_args: &[String]) -> Result<bool> {
+#[cfg(not(feature = "with-tch"))]
+pub fn dispatch() -> Result<bool> {
     Ok(false)
+}
+
+#[cfg(feature = "with-tch")]
+#[derive(Debug, Parser)]
+#[command(
+    name = "vision",
+    version,
+    author,
+    about = "Vision pipeline and ML demos"
+)]
+struct AppCli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[cfg(feature = "with-tch")]
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the vision inference pipeline.
+    Vision(VisionCliArgs),
+    /// Train the MNIST digit classifier.
+    MnistTrain(MnistTrainArgs),
+    /// Run inference on a single MNIST image.
+    MnistPredict(MnistPredictArgs),
+    /// Print MNIST helper command usage.
+    MnistHelp,
 }

@@ -14,9 +14,9 @@
 
 /// Re-export pipeline settings so callers can configure runs without reaching
 /// into submodules.
-pub use config::{SourceKind, VisionConfig};
-/// Launch the pipeline using CLI-style arguments.
-pub use pipeline::run_from_args;
+pub use config::{SourceKind, VisionCliArgs, VisionConfig};
+/// Launch the vision pipeline with a ready-made configuration.
+pub use pipeline::run;
 
 mod annotation;
 mod config;
