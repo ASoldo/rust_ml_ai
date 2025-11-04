@@ -1,3 +1,5 @@
+//! GPU runtime for preprocessing frames, drawing overlays, and encoding JPEGs.
+
 use std::{ffi::c_int, ptr, sync::Arc};
 
 use cudarc::driver::PushKernelArg;
@@ -41,9 +43,13 @@ unsafe impl Sync for VisionRuntime {}
 
 /// Result of the preprocessing stage.
 pub struct PreprocessOutput {
+    /// Device pointer to the tensor buffer (GPU address space).
     pub tensor_ptr: u64,
+    /// Number of `f32` elements in the tensor buffer.
     pub tensor_len: usize,
+    /// Width of the resized output frame.
     pub width: i32,
+    /// Height of the resized output frame.
     pub height: i32,
 }
 
@@ -129,6 +135,7 @@ impl VisionRuntime {
         })
     }
 
+    /// Encode the annotated frame buffer to JPEG using NVJPEG.
     pub fn encode_jpeg(&mut self, width: i32, height: i32, quality: c_int) -> Result<Vec<u8>> {
         if self.resized_bgr.is_none() {
             return Err("no annotated frame available".into());
@@ -201,12 +208,14 @@ impl VisionRuntime {
         Ok(output)
     }
 
+    /// Compile CUDA kernels for preprocessing, annotation, and NMS.
     fn build_ptx() -> Result<Ptx> {
         const SOURCE: &str = include_str!("vision_kernels.cu");
         nvrtc::compile_ptx(SOURCE)
             .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
     }
 
+    /// Map NVJPEG error codes into `Result`.
     fn check_nvjpeg(status: nvjpegStatus_t, label: &str) -> Result<()> {
         if status == nvjpegStatus_t_NVJPEG_STATUS_SUCCESS {
             Ok(())
@@ -215,6 +224,7 @@ impl VisionRuntime {
         }
     }
 
+    /// Ensure the input staging buffer is large enough for the upcoming frame.
     fn ensure_input_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
         let needs = match self.input_bgr {
             Some(ref buf) if buf.len() >= len => false,
@@ -226,6 +236,7 @@ impl VisionRuntime {
         Ok(self.input_bgr.as_mut().unwrap())
     }
 
+    /// Ensure the resized BGR buffer is allocated.
     fn ensure_resized_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
         let needs = match self.resized_bgr {
             Some(ref buf) if buf.len() >= len => false,
@@ -237,6 +248,7 @@ impl VisionRuntime {
         Ok(self.resized_bgr.as_mut().unwrap())
     }
 
+    /// Ensure the tensor output buffer is allocated.
     fn ensure_tensor_buffer(&mut self, len: usize) -> Result<&mut CudaSlice<f32>> {
         let needs = match self.tensor_buffer {
             Some(ref buf) if buf.len() >= len => false,
@@ -248,6 +260,7 @@ impl VisionRuntime {
         Ok(self.tensor_buffer.as_mut().unwrap())
     }
 
+    /// Ensure the NMS keep-flag buffer is allocated.
     fn ensure_keep_flags(&mut self, len: usize) -> Result<&mut CudaSlice<i32>> {
         let needs = match self.keep_flags {
             Some(ref buf) if buf.len() >= len => false,
@@ -259,6 +272,7 @@ impl VisionRuntime {
         Ok(self.keep_flags.as_mut().unwrap())
     }
 
+    /// Ensure the boxes scratch buffer is allocated.
     fn ensure_boxes_scratch(&mut self, len: usize) -> Result<&mut CudaSlice<i32>> {
         let needs = match self.boxes_scratch {
             Some(ref buf) if buf.len() >= len => false,
@@ -270,6 +284,7 @@ impl VisionRuntime {
         Ok(self.boxes_scratch.as_mut().unwrap())
     }
 
+    /// Ensure the label positions buffer is allocated.
     fn ensure_label_positions(&mut self, len: usize) -> Result<&mut CudaSlice<i32>> {
         let needs = match self.label_positions {
             Some(ref buf) if buf.len() >= len => false,
@@ -281,6 +296,7 @@ impl VisionRuntime {
         Ok(self.label_positions.as_mut().unwrap())
     }
 
+    /// Ensure the label offsets buffer is allocated.
     fn ensure_label_offsets(&mut self, len: usize) -> Result<&mut CudaSlice<i32>> {
         let needs = match self.label_offsets {
             Some(ref buf) if buf.len() >= len => false,
@@ -292,6 +308,7 @@ impl VisionRuntime {
         Ok(self.label_offsets.as_mut().unwrap())
     }
 
+    /// Ensure the label lengths buffer is allocated.
     fn ensure_label_lengths(&mut self, len: usize) -> Result<&mut CudaSlice<i32>> {
         let needs = match self.label_lengths {
             Some(ref buf) if buf.len() >= len => false,
@@ -303,6 +320,7 @@ impl VisionRuntime {
         Ok(self.label_lengths.as_mut().unwrap())
     }
 
+    /// Ensure the label character buffer is allocated.
     fn ensure_label_chars(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
         let needs = match self.label_chars {
             Some(ref buf) if buf.len() >= len => false,
@@ -314,6 +332,7 @@ impl VisionRuntime {
         Ok(self.label_chars.as_mut().unwrap())
     }
 
+    /// Ensure the info text buffer is allocated.
     fn ensure_info_text(&mut self, len: usize) -> Result<&mut CudaSlice<u8>> {
         let needs = match self.info_text {
             Some(ref buf) if buf.len() >= len => false,
@@ -511,6 +530,7 @@ impl VisionRuntime {
     }
 
     /// Downloads the resized BGR frame into host memory.
+    /// Download the resized BGR buffer into host memory.
     pub fn download_bgr(&self, width: i32, height: i32) -> Result<Vec<u8>> {
         let len = (width as usize) * (height as usize) * 3;
         if let Some(ref buf) = self.resized_bgr {
@@ -523,6 +543,7 @@ impl VisionRuntime {
         }
     }
 
+    /// Return the CUDA device index owning the runtime.
     pub fn device_index(&self) -> i32 {
         self.device_index
     }

@@ -1,3 +1,5 @@
+//! Static map loader that fetches a tile and exposes it as a Bevy texture.
+
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -6,12 +8,16 @@ use image::imageops::FilterType;
 use reqwest::blocking::Client;
 use std::collections::HashMap;
 
+/// Plugin responsible for fetching and registering the static map texture.
 pub struct MapTexturePlugin;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+/// Startup system ordering for map setup.
 pub struct MapSetupSet;
 
 #[derive(Resource, Clone)]
+/// Configuration for the static map request. Values can be overridden through
+/// environment variables.
 pub struct StaticMapConfig {
     pub latitude: f64,
     pub longitude: f64,
@@ -51,6 +57,7 @@ impl Default for StaticMapConfig {
 }
 
 #[derive(Resource, Clone)]
+/// Wrapper resource storing the map texture handle.
 pub struct MapTexture {
     pub handle: Handle<Image>,
 }
@@ -63,6 +70,7 @@ impl Plugin for MapTexturePlugin {
     }
 }
 
+/// Fetch the map texture and insert it into the Bevy world.
 fn setup_map_texture(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -99,6 +107,7 @@ fn setup_map_texture(
     commands.insert_resource(MapTexture { handle });
 }
 
+/// Download and resize the map tile according to the provided config.
 fn fetch_map_image(config: &StaticMapConfig) -> Result<Image, String> {
     let url_template = config
         .provider_url
@@ -146,6 +155,7 @@ fn fetch_map_image(config: &StaticMapConfig) -> Result<Image, String> {
     Ok(image)
 }
 
+/// Interpolate a template URL using configuration values and slippy-map maths.
 fn build_url_from_template(template: &str, config: &StaticMapConfig) -> String {
     let zoom = config.zoom.min(22);
     let n = 1_i64 << zoom;

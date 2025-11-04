@@ -1,3 +1,5 @@
+//! Debug gizmos visualising the camera rig and projection geometry.
+
 use bevy::prelude::*;
 
 use crate::scene::{
@@ -9,6 +11,7 @@ const FRUSTUM_COLOR: Color = Color::srgb(0.2, 0.8, 1.0);
 const PLANE_COLOR: Color = Color::srgb(0.95, 0.65, 0.1);
 const CAMERA_LINK_COLOR: Color = Color::WHITE;
 
+/// Adds systems responsible for drawing debug gizmos around the camera rig.
 pub struct CameraRigGizmosPlugin;
 
 impl Plugin for CameraRigGizmosPlugin {
@@ -17,6 +20,7 @@ impl Plugin for CameraRigGizmosPlugin {
     }
 }
 
+/// Draw axes, frustum lines, and screen plane alignment.
 fn draw_camera_rig_gizmos(
     mut gizmos: Gizmos,
     plane_query: Query<&GlobalTransform, With<CameraFeedPlane>>,
@@ -43,6 +47,7 @@ fn draw_camera_rig_gizmos(
     }
 }
 
+/// Draw a closed loop through the supplied corners.
 fn draw_loop(gizmos: &mut Gizmos, corners: &[Vec3; 4], color: Color) {
     let mut points = Vec::with_capacity(5);
     points.extend_from_slice(corners);
@@ -50,6 +55,7 @@ fn draw_loop(gizmos: &mut Gizmos, corners: &[Vec3; 4], color: Color) {
     gizmos.linestrip(points.iter().copied(), color);
 }
 
+/// Draw XYZ axes centered at the supplied origin.
 fn draw_root_axes(gizmos: &mut Gizmos, origin: Vec3) {
     let axis = Vec3::X * ROOT_AXIS_LEN;
     gizmos.line(origin - axis, origin + axis, Color::srgb(1.0, 0.1, 0.1));
@@ -59,6 +65,7 @@ fn draw_root_axes(gizmos: &mut Gizmos, origin: Vec3) {
     gizmos.line(origin - axis, origin + axis, Color::srgb(0.1, 0.4, 1.0));
 }
 
+/// Compute plane corners in world space given the plane transform.
 fn plane_corners_world(plane_transform: &GlobalTransform) -> [Vec3; 4] {
     let half_width = PLANE_WIDTH * 0.5;
     let half_height = (PLANE_WIDTH / PLANE_ASPECT_RATIO) * 0.5;

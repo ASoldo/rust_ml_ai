@@ -1,3 +1,6 @@
+//! Primary HUD HTML rendered at `/`.
+
+/// HTML document containing the live video tile, telemetry, and mission overlay.
 pub const HUD_INDEX_HTML: &str = r#"
 <!doctype html>
 <html lang="en">

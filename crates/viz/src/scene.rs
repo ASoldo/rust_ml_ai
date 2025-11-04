@@ -1,22 +1,34 @@
+//! Scene graph assembly for the visualization environment.
+
 use bevy::math::primitives::Plane3d;
 use bevy::prelude::*;
 
 use crate::map::MapTexture;
 use crate::stream::{StreamMaterial, StreamTexture};
 
+/// Width of the video plane in world units.
 pub const PLANE_WIDTH: f32 = 12.0;
+/// Aspect ratio for the video plane (16:9).
 pub const PLANE_ASPECT_RATIO: f32 = 16.0 / 9.0;
+/// Width of the ground map square.
 pub const MAP_WIDTH: f32 = 120.0;
 
+/// Origin of the camera rig.
 pub const RIG_ROOT: Vec3 = Vec3::ZERO;
+/// Base platform height.
 pub const RIG_HEIGHT: f32 = 2.2;
+/// Additional mast height above the platform.
 pub const CAMERA_MAST_EXTRA: f32 = 3.5;
+/// Total camera head height.
 pub const CAMERA_HEAD_HEIGHT: f32 = RIG_HEIGHT + CAMERA_MAST_EXTRA;
+/// Distance between the camera head and the video plane.
 pub const PLANE_DISTANCE: f32 = 3.6;
 
 #[derive(Component)]
+/// Marker component tagging the plane that displays the live stream.
 pub struct CameraFeedPlane;
 
+/// Create the 3D environment, map, lighting, and camera feed plane.
 pub fn spawn_environment(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,

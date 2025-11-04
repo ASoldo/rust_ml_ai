@@ -1,3 +1,5 @@
+//! MNIST training utilities used by the sample CLI subcommands.
+
 use std::convert::TryFrom;
 use std::path::Path;
 
@@ -8,22 +10,32 @@ use tch::{
     vision::{dataset::Dataset, mnist},
 };
 
+/// Total class count supported by the classifier (digits 0-9).
 pub const DIGIT_CLASS_COUNT: i64 = 10;
+/// Edge length for MNIST input images.
 pub const IMAGE_EDGE_PIXELS: i64 = 28;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Debug, Clone)]
+/// Training hyperparameters and input/output paths for the MNIST classifier.
 pub struct TrainingConfig<'a> {
+    /// Directory containing the MNIST dataset.
     pub data_dir: &'a Path,
+    /// Output path for the trained model weights.
     pub model_out: &'a Path,
+    /// Number of epochs to train.
     pub epochs: i64,
+    /// Batch size used during training and evaluation.
     pub batch_size: i64,
+    /// Learning rate passed to Adam.
     pub learning_rate: f64,
+    /// Device used for both training and evaluation.
     pub device: Device,
 }
 
 impl<'a> TrainingConfig<'a> {
+    /// Construct a configuration with sensible defaults.
     pub fn new(data_dir: &'a Path, model_out: &'a Path) -> Self {
         Self {
             data_dir,
@@ -37,12 +49,14 @@ impl<'a> TrainingConfig<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// Summary returned after completing training.
 pub struct TrainingReport {
     pub epochs: i64,
     pub final_loss: f64,
     pub test_accuracy: f64,
 }
 
+/// Train the MNIST classifier and persist the resulting weights.
 pub fn train_mnist(cfg: &TrainingConfig<'_>) -> Result<TrainingReport> {
     let dataset = mnist::load_dir(cfg.data_dir)?;
     let vs = nn::VarStore::new(cfg.device);
@@ -112,6 +126,7 @@ pub struct DigitClassifier {
 }
 
 impl DigitClassifier {
+    /// Load a classifier model from disk onto the requested device.
     pub fn load<P: AsRef<Path>>(model_path: P, device: Device) -> Result<Self> {
         let mut vs = nn::VarStore::new(device);
         let net = MnistNet::new(&vs.root());
@@ -123,6 +138,7 @@ impl DigitClassifier {
         })
     }
 
+    /// Run inference on a pre-normalised tensor batch.
     pub fn predict_tensor(&self, input: &Tensor) -> Result<Prediction> {
         let input = input
             .to_device(self.device)
@@ -140,6 +156,7 @@ impl DigitClassifier {
         })
     }
 
+    /// Load a single image from disk and run inference.
     pub fn predict_image<P: AsRef<Path>>(&self, image_path: P) -> Result<Prediction> {
         let tensor = load_image_tensor(image_path.as_ref(), self.device)?;
         self.predict_tensor(&tensor)
@@ -147,11 +164,13 @@ impl DigitClassifier {
 }
 
 #[derive(Debug, Clone)]
+/// Prediction result containing the winning digit and per-class probabilities.
 pub struct Prediction {
     pub digit: i64,
     pub probabilities: Vec<f32>,
 }
 
+/// Convenience helper to load a classifier, read an image, and predict a digit.
 pub fn predict_image_file<P: AsRef<Path>, Q: AsRef<Path>>(
     model_path: P,
     image_path: Q,
@@ -162,6 +181,7 @@ pub fn predict_image_file<P: AsRef<Path>, Q: AsRef<Path>>(
     classifier.predict_image(image_path)
 }
 
+/// Evaluate the model on the test split and return `(correct, total)`.
 fn evaluate(net: &MnistNet, dataset: &Dataset, batch_size: i64, device: Device) -> (i64, i64) {
     let mut correct = 0i64;
     let mut total = 0i64;
@@ -185,10 +205,12 @@ fn evaluate(net: &MnistNet, dataset: &Dataset, batch_size: i64, device: Device) 
     (correct, total)
 }
 
+/// Convert pixel intensities to floats in `[0,1]`.
 fn normalize_batch(images: Tensor) -> Tensor {
     images.to_kind(Kind::Float) / 255.0
 }
 
+/// Load and normalise a single MNIST image from disk.
 fn load_image_tensor(path: &Path, device: Device) -> Result<Tensor> {
     let image = image::open(path)?;
     let image = if image.dimensions() != (IMAGE_EDGE_PIXELS as u32, IMAGE_EDGE_PIXELS as u32) {

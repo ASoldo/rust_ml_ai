@@ -1,3 +1,9 @@
+//! Encoder stage handling both CPU and GPU JPEG generation.
+//!
+//! The encoding stage consumes `EncodeJob`s produced by processing workers. CPU
+//! jobs already include the fully annotated frame whereas GPU jobs require
+//! invoking NVJPEG via the shared `VisionRuntime`.
+
 use std::{
     sync::{
         Arc, Mutex,
@@ -16,6 +22,7 @@ use crate::vision::{
     watchdog::{HealthComponent, PipelineHealth},
 };
 
+/// GPU encoding request emitted by the processing workers.
 pub(crate) struct GpuEncodeJob {
     pub(crate) runtime: Arc<Mutex<VisionRuntime>>,
     pub(crate) width: i32,
@@ -27,11 +34,18 @@ pub(crate) struct GpuEncodeJob {
     pub(crate) jpeg_quality: i32,
 }
 
+/// Payload sent to the encoder thread. CPU jobs contain a ready-to-serve
+/// `FramePacket` while GPU jobs carry the metadata required to finalise the
+/// annotated frame via NVJPEG.
 pub(crate) enum EncodeJob {
     Cpu(FramePacket),
     Gpu(GpuEncodeJob),
 }
 
+/// Spawn the dedicated encoder thread.
+///
+/// The worker listens for `EncodeJob`s, updates health metrics, and keeps the
+/// shared/latest frame buffers in sync for the HTTP preview server.
 pub(crate) fn spawn_encode_worker(
     shared: SharedFrame,
     history: FrameHistory,
@@ -72,6 +86,7 @@ pub(crate) fn spawn_encode_worker(
     })
 }
 
+/// Encode a GPU-annotated frame into a `FramePacket`.
 pub(crate) fn encode_gpu_frame(job: GpuEncodeJob) -> Result<FramePacket> {
     let GpuEncodeJob {
         runtime,

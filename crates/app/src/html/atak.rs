@@ -1,3 +1,6 @@
+//! Tactical ATAK-style HUD served at `/atak`.
+
+/// HTML document rendered by the preview server for the ATAK console view.
 pub const HUD_ATAK_HTML: &str = r#"
 <!doctype html>
 <html lang="en" class="h-full dark">

@@ -1,3 +1,5 @@
+//! MJPEG stream ingestion and texture update logic for the visualization app.
+
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::sync::Mutex;
@@ -15,12 +17,15 @@ use reqwest::blocking::{Client, Response};
 const CHUNK_SIZE: usize = 64 * 1024;
 static FIRST_FRAME_DUMPED: AtomicBool = AtomicBool::new(false);
 
+/// Plugin that spawns MJPEG reader/decoder threads and updates the stream texture.
 pub struct StreamTexturePlugin;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
+/// Startup ordering marker for stream initialization systems.
 pub struct StreamSetupSet;
 
 #[derive(Resource, Clone)]
+/// Configuration for the MJPEG stream source and reconnection behaviour.
 pub struct MjpegStreamConfig {
     pub source: String,
     pub reopen_delay: Duration,
@@ -40,16 +45,19 @@ impl Default for MjpegStreamConfig {
 }
 
 #[derive(Resource, Clone)]
+/// Resource referencing the GPU texture containing the latest video frame.
 pub struct StreamTexture {
     pub handle: Handle<Image>,
 }
 
 #[derive(Resource, Clone)]
+/// Material that references the stream texture for use on meshes.
 pub struct StreamMaterial {
     pub handle: Handle<StandardMaterial>,
 }
 
 #[derive(Resource)]
+/// Wrapper around the decoded frame receiver shared with the main thread.
 struct FrameReceiver {
     rx: Mutex<Receiver<DecodedFrame>>,
 }
@@ -70,6 +78,7 @@ impl Plugin for StreamTexturePlugin {
     }
 }
 
+/// Initialise the stream texture placeholder and launch reader/decoder threads.
 fn setup_stream_texture(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -110,6 +119,7 @@ fn setup_stream_texture(
         .expect("failed to spawn mjpeg frame decoder thread");
 }
 
+/// Trace log helper to inspect the current texture contents.
 pub fn debug_texture_sample(
     stream_texture: Option<Res<StreamTexture>>,
     images: Res<Assets<Image>>,
@@ -129,6 +139,7 @@ pub fn debug_texture_sample(
     }
 }
 
+/// Pull decoded frames off the channel and update the GPU texture.
 fn update_stream_texture(
     mut images: ResMut<Assets<Image>>,
     stream_texture: Option<Res<StreamTexture>>,
@@ -185,6 +196,7 @@ fn update_stream_texture(
     }
 }
 
+/// Decode JPEG frames on a background thread and forward RGBA buffers.
 fn run_frame_decoder(rx: Receiver<Vec<u8>>, tx: Sender<DecodedFrame>) {
     while let Ok(mut frame) = rx.recv() {
         while let Ok(newer) = rx.try_recv() {
@@ -230,6 +242,7 @@ fn run_frame_decoder(rx: Receiver<Vec<u8>>, tx: Sender<DecodedFrame>) {
     }
 }
 
+/// Apply the decoded frame onto the Bevy `Image`, resizing when necessary.
 fn apply_frame_to_image(
     images: &mut Assets<Image>,
     handle: &Handle<Image>,
@@ -303,6 +316,7 @@ fn apply_frame_to_image(
     }
 }
 
+/// Run the blocking loop that reads MJPEG data from HTTP or file sources.
 fn run_stream_reader(config: MjpegStreamConfig, tx: Sender<Vec<u8>>) {
     let is_http = config.source.starts_with("http://") || config.source.starts_with("https://");
     let client = if is_http {
@@ -347,11 +361,13 @@ fn run_stream_reader(config: MjpegStreamConfig, tx: Sender<Vec<u8>>) {
     }
 }
 
+/// Consume MJPEG data from a local file.
 fn stream_from_file(file: File, tx: &Sender<Vec<u8>>, config: &MjpegStreamConfig) {
     let reader = BufReader::new(file);
     stream_from_reader(reader, tx, config);
 }
 
+/// Consume MJPEG data from an HTTP response.
 fn stream_from_http(response: Response, tx: &Sender<Vec<u8>>, config: &MjpegStreamConfig) {
     if !response.status().is_success() {
         warn!(
@@ -367,6 +383,7 @@ fn stream_from_http(response: Response, tx: &Sender<Vec<u8>>, config: &MjpegStre
     stream_from_reader(reader, tx, config);
 }
 
+/// Shared reader loop used for both HTTP and file sources.
 fn stream_from_reader<R: Read>(mut reader: R, tx: &Sender<Vec<u8>>, config: &MjpegStreamConfig) {
     let mut buffer = Vec::with_capacity(CHUNK_SIZE * 2);
     let mut chunk = [0u8; CHUNK_SIZE];
@@ -397,6 +414,7 @@ fn stream_from_reader<R: Read>(mut reader: R, tx: &Sender<Vec<u8>>, config: &Mjp
     }
 }
 
+/// Split the buffer at JPEG SOI/EOI markers and return a full frame.
 fn extract_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     let Some(start) = find_marker(buffer, &[0xFF, 0xD8]) else {
         if buffer.len() > CHUNK_SIZE {
@@ -419,6 +437,7 @@ fn extract_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     Some(frame)
 }
 
+/// Find the first occurrence of a marker in the buffer.
 fn find_marker(buffer: &[u8], marker: &[u8]) -> Option<usize> {
     buffer
         .windows(marker.len())

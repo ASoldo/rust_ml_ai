@@ -1,3 +1,8 @@
+//! CUDA kernels and runtime wrappers used across the workspace.
+//!
+//! The module currently exposes a small vector addition example and the
+//! full-featured `vision` runtime powering GPU preprocessing and annotation.
+
 use cudarc::driver::{CudaContext, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use std::{error::Error, fmt, result::Result as StdResult};
@@ -10,6 +15,7 @@ pub type Result<T> = StdResult<T, Box<dyn Error + Send + Sync>>;
 
 /// Error raised when vector lengths differ.
 #[derive(Debug)]
+/// Error indicating that two input slices differed in length.
 struct LengthMismatch {
     left: usize,
     right: usize,

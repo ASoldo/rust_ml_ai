@@ -1,3 +1,5 @@
+//! Orbit-style camera controller used by the visualization app.
+
 use bevy::input::ButtonInput;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
@@ -11,6 +13,7 @@ const MIN_PITCH: f32 = -FRAC_PI_2 + 0.05;
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.05;
 const INITIAL_CAMERA_POS: Vec3 = Vec3::new(0.0, CAMERA_HEAD_HEIGHT + 0.6, -PLANE_DISTANCE * 10.7);
 
+/// Adds orbit camera spawning and control systems.
 pub struct OrbitCameraPlugin;
 
 impl Plugin for OrbitCameraPlugin {
@@ -21,6 +24,7 @@ impl Plugin for OrbitCameraPlugin {
 }
 
 #[derive(Component)]
+/// Component storing orbit camera parameters.
 pub struct OrbitCamera {
     pub focus: Vec3,
     radius: f32,
@@ -48,6 +52,7 @@ impl OrbitCamera {
     }
 }
 
+/// Spawn the primary viewer camera with an orbit controller.
 fn spawn_camera(mut commands: Commands) {
     let translation = INITIAL_CAMERA_POS;
     let focus = RIG_ROOT;
@@ -60,6 +65,7 @@ fn spawn_camera(mut commands: Commands) {
     ));
 }
 
+/// Handle mouse input to orbit and zoom the camera.
 fn control_orbit_camera(
     mut motion_events: MessageReader<MouseMotion>,
     mut scroll_events: MessageReader<MouseWheel>,

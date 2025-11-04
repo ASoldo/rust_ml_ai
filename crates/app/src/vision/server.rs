@@ -1,3 +1,9 @@
+//! Actix Web preview server exposing the HUD, MJPEG stream, and detection APIs.
+//!
+//! The server runs on a dedicated thread to keep the pipeline hot path free from
+//! Actix runtime concerns. It surfaces live frames, a small history buffer, and
+//! SSE streams for downstream consumers.
+
 use std::time::Duration;
 
 use actix_web::{
@@ -14,18 +20,21 @@ use tracing::error;
 
 use crate::vision::data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame};
 
+/// Shared state backing HTTP handlers.
 pub(crate) struct ServerState {
     pub(crate) latest: SharedFrame,
     pub(crate) history: FrameHistory,
 }
 
 #[derive(Default)]
+/// Handle for the preview server thread.
 pub(crate) struct PreviewServer {
     shutdown: Option<oneshot::Sender<()>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl PreviewServer {
+    /// Signal the server to stop and block until the thread exits.
     pub(crate) fn stop(self) {
         if let Some(tx) = self.shutdown {
             let _ = tx.send(());
@@ -41,6 +50,7 @@ struct FrameQuery {
     frame: Option<u64>,
 }
 
+/// Spawn the preview server thread and return a handle that can stop it.
 pub(crate) fn spawn_preview_server(
     shared: SharedFrame,
     history: FrameHistory,
@@ -89,6 +99,7 @@ pub(crate) fn spawn_preview_server(
     })
 }
 
+/// Fetch the latest encoded frame from the shared pointer.
 fn latest_frame(shared: &SharedFrame) -> Option<FramePacket> {
     match shared.lock() {
         Ok(guard) => guard.clone(),
@@ -96,6 +107,7 @@ fn latest_frame(shared: &SharedFrame) -> Option<FramePacket> {
     }
 }
 
+/// Retrieve a historical frame by sequence number.
 fn history_frame(history: &FrameHistory, frame_number: u64) -> Option<FramePacket> {
     match history.lock() {
         Ok(buffer) => buffer
@@ -106,6 +118,7 @@ fn history_frame(history: &FrameHistory, frame_number: u64) -> Option<FramePacke
     }
 }
 
+/// Return a single JPEG frame by sequence number or the latest frame.
 async fn frame_handler(
     query: web::Query<FrameQuery>,
     state: web::Data<ServerState>,
@@ -139,6 +152,7 @@ async fn frame_handler(
     }
 }
 
+/// Stream the MJPEG feed over a multipart response.
 async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {
@@ -174,18 +188,21 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
         .streaming(stream)
 }
 
+/// Serve the default HUD HTML.
 async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(crate::html::hud_html::HUD_INDEX_HTML)
 }
 
+/// Serve the ATAK-style HUD.
 async fn atak_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(crate::html::atak::HUD_ATAK_HTML)
 }
 
+/// Return the most recent detection snapshot as JSON.
 async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     let guard = match state.latest.lock() {
         Ok(guard) => guard,
@@ -203,6 +220,7 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     }
 }
 
+/// Stream detection snapshots as Server-Sent Events.
 async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {

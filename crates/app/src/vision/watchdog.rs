@@ -1,3 +1,10 @@
+//! Watchdog responsible for detecting stalled pipeline stages and triggering
+//! restarts.
+//!
+//! The watchdog tracks heartbeats emitted by the capture, processing, and
+//! encoding stages. When any stage stops beating the pipeline gracefully shuts
+//! down and the supervisor restarts it.
+
 use std::{
     sync::{
         Arc, Mutex,
@@ -9,11 +16,15 @@ use std::{
 
 use tracing::error;
 
+/// Sleep interval between watchdog health checks.
 pub(crate) const WATCHDOG_POLL_INTERVAL_MS: u64 = 500;
+/// Time without a heartbeat before a component is considered stalled.
 pub(crate) const WATCHDOG_STALE_THRESHOLD_MS: u64 = 1_500;
+/// Grace period at startup allowing components to warm up before monitoring.
 pub(crate) const WATCHDOG_STARTUP_GRACE_MS: u64 = 5_000;
 
 #[derive(Copy, Clone, Debug)]
+/// Logical components monitored by the watchdog.
 pub(crate) enum HealthComponent {
     Capture,
     Processor,
@@ -21,6 +32,7 @@ pub(crate) enum HealthComponent {
 }
 
 impl HealthComponent {
+    /// Human readable label used in log messages and metrics.
     pub(crate) fn label(self) -> &'static str {
         match self {
             HealthComponent::Capture => "capture",
@@ -37,6 +49,7 @@ pub(crate) struct PipelineHealth {
 }
 
 impl PipelineHealth {
+    /// Initialise the health tracker with grace periods for each component.
     pub(crate) fn new() -> Self {
         let now = current_millis();
         let grace_deadline = now.saturating_add(WATCHDOG_STARTUP_GRACE_MS);
@@ -47,6 +60,7 @@ impl PipelineHealth {
         }
     }
 
+    /// Register a heartbeat for the supplied component.
     pub(crate) fn beat(&self, component: HealthComponent) {
         let now = current_millis();
         match component {
@@ -56,6 +70,7 @@ impl PipelineHealth {
         }
     }
 
+    /// Returns the first component that has not produced a heartbeat recently.
     pub(crate) fn stale_component(&self, now: u64) -> Option<HealthComponent> {
         if now.saturating_sub(self.capture.load(Ordering::Relaxed)) > WATCHDOG_STALE_THRESHOLD_MS {
             return Some(HealthComponent::Capture);
@@ -71,12 +86,14 @@ impl PipelineHealth {
     }
 }
 
+/// Shared state exposing watchdog triggers to the pipeline supervisor.
 pub(crate) struct WatchdogState {
     triggered: AtomicBool,
     reason: Mutex<Option<HealthComponent>>,
 }
 
 impl WatchdogState {
+    /// Create an unarmed watchdog state.
     pub(crate) fn new() -> Self {
         Self {
             triggered: AtomicBool::new(false),
@@ -84,6 +101,7 @@ impl WatchdogState {
         }
     }
 
+    /// Record a trigger reason and mark the watchdog as fired.
     pub(crate) fn arm(&self, component: HealthComponent) {
         if let Ok(mut guard) = self.reason.lock() {
             *guard = Some(component);
@@ -91,10 +109,12 @@ impl WatchdogState {
         self.triggered.store(true, Ordering::SeqCst);
     }
 
+    /// Returns whether the watchdog fired.
     pub(crate) fn is_triggered(&self) -> bool {
         self.triggered.load(Ordering::SeqCst)
     }
 
+    /// Describe the component that caused the trigger, if known.
     pub(crate) fn reason(&self) -> Option<HealthComponent> {
         match self.reason.lock() {
             Ok(guard) => *guard,
@@ -103,6 +123,7 @@ impl WatchdogState {
     }
 }
 
+/// Spawn the watchdog thread that polls component health and requests restarts.
 pub(crate) fn spawn_watchdog(
     health: Arc<PipelineHealth>,
     running: Arc<AtomicBool>,

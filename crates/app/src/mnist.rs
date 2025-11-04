@@ -1,3 +1,9 @@
+//! Command helpers for training and running an MNIST classifier.
+//!
+//! The MNIST flows serve as a lightweight example of the `ml-core` crate in
+//! action. They are intentionally concise so the vision pipeline can lean on the
+//! same infrastructure for model loading and device selection.
+
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
@@ -8,6 +14,9 @@ mnist-train <data-dir> <model-out> [epochs] [batch-size] [learning-rate] [--cpu]
 const PREDICT_USAGE: &str = "Usage: cargo run -p vision --features with-tch -- mnist-predict <model-path> \
 <image-path> [--cpu]";
 
+/// Train the MNIST classifier with optional overrides for training hyperparameters.
+///
+/// Returns an error if mandatory CLI arguments are missing or if training fails.
 pub fn run_mnist_training(args: &[String]) -> Result<()> {
     if args.len() < 4 {
         bail!("{TRAIN_USAGE}");
@@ -50,6 +59,10 @@ pub fn run_mnist_training(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Run inference for a single image using a previously trained MNIST model.
+///
+/// The routine mirrors the command-line UX in official PyTorch tutorials, making
+/// it easy to compare behaviour across toolchains.
 pub fn run_mnist_prediction(args: &[String]) -> Result<()> {
     if args.len() < 4 {
         bail!("{PREDICT_USAGE}");
@@ -79,6 +92,7 @@ produced by mnist-train and that the image is a 28x28 grayscale PNG or JPEG."
     Ok(())
 }
 
+/// Print command help for the MNIST utilities.
 pub fn print_help() {
     println!("MNIST helper commands:");
     println!(

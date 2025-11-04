@@ -1,3 +1,9 @@
+//! Core machine-learning helpers shared across binaries and crates.
+//!
+//! The crate provides tiny utilities that keep heavier dependencies behind the
+//! optional `with-tch` feature flag so environments without LibTorch can still
+//! build the workspace.
+
 /// High-level helpers for preparing host data before sending it to the GPU or
 /// into a future `tch`/PyTorch pipeline.
 pub fn sample_inputs(len: usize) -> (Vec<f32>, Vec<f32>) {

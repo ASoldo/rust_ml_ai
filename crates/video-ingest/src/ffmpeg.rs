@@ -1,3 +1,5 @@
+//! FFmpeg-backed capture routines for RTSP, UDP, and NVDEC workflows.
+
 use std::{
     fmt::Write,
     io::{Read, Write as IoWrite},
@@ -62,6 +64,7 @@ pub fn spawn_nvdec_h264_reader(
     spawn_ffmpeg_reader(cmd, target_size, 3, None)
 }
 
+/// Spawn an RTSP reader, optionally leveraging NVDEC when requested.
 pub fn spawn_rtsp_reader(
     uri: &str,
     target_size: (i32, i32),
@@ -103,6 +106,7 @@ pub fn spawn_rtsp_reader(
     spawn_ffmpeg_reader(cmd, target_size, 4, None)
 }
 
+/// Spawn a UDP RTP reader, optionally leveraging NVDEC for decode.
 pub fn spawn_udp_reader(
     uri: &str,
     target_size: (i32, i32),
@@ -144,6 +148,7 @@ pub fn spawn_udp_reader(
     spawn_ffmpeg_reader(cmd, target_size, 4, Some(sdp))
 }
 
+/// Build the SDP payload consumed by FFmpeg when attaching to a UDP RTP stream.
 fn build_udp_sdp(uri: &str) -> Result<String, CaptureError> {
     let without_scheme = uri.strip_prefix("udp://").unwrap_or(uri);
     let mut parts = without_scheme.splitn(2, '?');
@@ -212,6 +217,7 @@ fn build_udp_sdp(uri: &str) -> Result<String, CaptureError> {
     Ok(sdp)
 }
 
+/// Launch FFmpeg and bridge its stdout into a frame channel.
 fn spawn_ffmpeg_reader(
     mut cmd: Command,
     target_size: (i32, i32),
@@ -254,6 +260,7 @@ fn spawn_ffmpeg_reader(
     Ok(rx)
 }
 
+/// Blocking loop that copies raw frames from FFmpeg stdout into the channel.
 fn ffmpeg_loop(
     mut stdout: impl Read,
     mut child: Child,

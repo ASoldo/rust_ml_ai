@@ -1,3 +1,5 @@
+//! Bevy-based visualization app rendering sensor streams and mission overlays.
+
 use bevy::asset::{AssetMode, AssetPlugin};
 use bevy::prelude::*;
 use bevy::window::{PresentMode, Window, WindowPlugin, WindowResolution};
@@ -10,6 +12,7 @@ mod stream;
 
 pub use orbit_camera::OrbitCameraPlugin;
 
+/// Primary Bevy plugin configuring windowing, assets, and subsystems.
 pub struct VizAppPlugin;
 
 impl Plugin for VizAppPlugin {

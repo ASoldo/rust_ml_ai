@@ -1,8 +1,16 @@
+//! Dynamic loading helpers for Torch CUDA shared objects.
+
 use std::sync::Once;
 
 use libloading::os::unix::{Library, RTLD_GLOBAL, RTLD_NOW};
 use tracing::{info, warn};
 
+/// Lazily load CUDA-dependent Torch shared libraries so `libtorch` kernels are
+/// available to the detector runtime.
+///
+/// LibTorch defers resolution of certain symbols until the first CUDA
+/// interaction. Loading them upfront avoids confusing runtime panics on systems
+/// where LD paths omit the libtorch directories.
 pub(crate) fn load_torch_cuda_runtime(verbose: bool) {
     static INIT: Once = Once::new();
     INIT.call_once(|| {

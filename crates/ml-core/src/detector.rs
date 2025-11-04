@@ -1,3 +1,8 @@
+//! TorchScript object detector wrapper with optional CUDA acceleration.
+//!
+//! The detector normalises input frames, runs the scripted model, and optionally
+//! leverages the CUDA kernels from `gpu-kernels` for preprocessing and NMS.
+
 use std::{
     convert::TryFrom,
     path::Path,
@@ -178,6 +183,7 @@ impl Detector {
         Ok(results)
     }
 
+    /// Run GPU-side confidence filtering and NMS for a single batch element.
     fn process_gpu_single(&self, preds: Tensor) -> Result<Option<Vec<Vec<f32>>>> {
         let device = self.device;
         if !matches!(device, Device::Cuda(_)) {
@@ -242,6 +248,7 @@ impl Detector {
         }
     }
 
+    /// Convert raw detector rows into typed `Detection`s.
     fn rows_to_detections(
         &self,
         rows: Vec<Vec<f32>>,
@@ -270,11 +277,13 @@ impl Detector {
         Ok(detections)
     }
 
+    /// Expose the optional CUDA `VisionRuntime` handle used by annotation code.
     pub fn vision_runtime(&self) -> Option<Arc<Mutex<VisionRuntime>>> {
         self.vision.clone()
     }
 }
 
+/// Convert `[x, y, w, h]` detections into `[x1, y1, x2, y2]` corners.
 fn xywh_to_corners(x: f32, y: f32, w: f32, h: f32, input_size: (i64, i64)) -> [f32; 4] {
     let (width, height) = (input_size.0 as f32, input_size.1 as f32);
     let half_w = w / 2.0;
@@ -290,6 +299,7 @@ fn xywh_to_corners(x: f32, y: f32, w: f32, h: f32, input_size: (i64, i64)) -> [f
     [x1, y1, x2, y2]
 }
 
+/// Apply greedy non-maximum suppression on CPU.
 fn apply_nms(detections: &mut Vec<Detection>, iou_threshold: f32) {
     detections.sort_by(|a, b| {
         b.score
@@ -314,6 +324,7 @@ fn apply_nms(detections: &mut Vec<Detection>, iou_threshold: f32) {
     *detections = result;
 }
 
+/// Intersection-over-union helper used by CPU NMS.
 fn iou(a: &[f32; 4], b: &[f32; 4]) -> f32 {
     let x1 = a[0].max(b[0]);
     let y1 = a[1].max(b[1]);

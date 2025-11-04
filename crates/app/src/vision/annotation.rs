@@ -1,3 +1,8 @@
+//! Drawing primitives shared by CPU and GPU annotation paths.
+//!
+//! The CPU path draws overlays into an `ImageBuffer` using software rasterisation
+//! whereas the GPU path uses CUDA kernels via `VisionRuntime`.
+
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
@@ -10,6 +15,7 @@ use crate::vision::{
 };
 use video_ingest::Frame;
 
+/// Annotate a frame entirely on the CPU and return a `FramePacket`.
 pub(crate) fn annotate_frame_cpu(
     frame: &Frame,
     frame_number: u64,
@@ -103,6 +109,8 @@ pub(crate) fn annotate_frame_cpu(
     })
 }
 
+/// Stage a GPU annotation job, returning a `GpuEncodeJob` that the encoder
+/// thread will complete via NVJPEG.
 pub(crate) fn annotate_frame_gpu(
     runtime: &Arc<Mutex<VisionRuntime>>,
     frame: &Frame,
@@ -175,6 +183,7 @@ pub(crate) fn annotate_frame_gpu(
     })
 }
 
+/// Convert packed BGR bytes into an RGBA buffer used by the software renderer.
 fn bgr_to_rgba(input: &[u8]) -> Vec<u8> {
     let pixels = input.len() / 3;
     let mut output = Vec::with_capacity(pixels * 4);
@@ -187,6 +196,7 @@ fn bgr_to_rgba(input: &[u8]) -> Vec<u8> {
     output
 }
 
+/// Draw a rectangle outline with a one-pixel stroke.
 fn draw_rectangle(
     image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     left: i32,
@@ -220,6 +230,7 @@ fn draw_rectangle(
     }
 }
 
+/// Fill an axis-aligned rectangle.
 fn fill_rect(
     image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     left: i32,
@@ -242,6 +253,7 @@ fn fill_rect(
     }
 }
 
+/// Draw a 5x7 bitmap font string at the supplied location.
 fn draw_label(
     image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     mut x: i32,
@@ -274,6 +286,7 @@ fn draw_label(
     }
 }
 
+/// Lookup table for the 5x7 font used by the HUD.
 fn glyph_bits(ch: char) -> Option<[u8; 7]> {
     match ch {
         'A' => Some([

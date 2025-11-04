@@ -1,3 +1,9 @@
+//! Pipeline supervisor tying together capture, processing, encoding, and the
+//! preview server.
+//!
+//! The pipeline is responsible for wiring channels between stages, keeping
+//! watchdog state in sync, and handling restarts when components stall.
+
 use std::{
     collections::VecDeque,
     sync::{
@@ -23,11 +29,13 @@ use crate::vision::{
     watchdog::{HealthComponent, PipelineHealth, WatchdogState, spawn_watchdog},
 };
 
+/// Parse CLI arguments, build a [`VisionConfig`], and execute the pipeline.
 pub fn run_from_args(args: &[String]) -> Result<()> {
     let config = VisionConfig::from_args(args)?;
     run(config)
 }
 
+/// Run the vision pipeline, automatically restarting on recoverable faults.
 pub fn run(config: VisionConfig) -> Result<()> {
     static CTRL_HANDLER: Once = Once::new();
 
@@ -71,11 +79,13 @@ pub fn run(config: VisionConfig) -> Result<()> {
     Ok(())
 }
 
+/// Result of a single pipeline run attempt.
 enum PipelineOutcome {
     Graceful,
     Restart(&'static str),
 }
 
+/// Execute the pipeline once, returning whether to exit or restart.
 fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<PipelineOutcome> {
     if shutdown.load(Ordering::SeqCst) {
         return Ok(PipelineOutcome::Graceful);

@@ -1,3 +1,5 @@
+//! OpenCV-backed camera capture pipeline.
+
 use std::thread;
 
 use anyhow::Result;
@@ -32,6 +34,7 @@ pub fn spawn_camera_reader(
     Ok(rx)
 }
 
+/// Main capture loop executed on the background thread.
 fn capture_loop(
     uri: &str,
     target_size: (i32, i32),
@@ -102,6 +105,7 @@ fn capture_loop(
     Ok(())
 }
 
+/// Parse a `/dev/videoX` style URI and return the zero-based index if present.
 pub(crate) fn parse_device_index(uri: &str) -> Option<i32> {
     if let Ok(index) = uri.parse::<i32>() {
         return Some(index);
@@ -116,6 +120,7 @@ pub(crate) fn parse_device_index(uri: &str) -> Option<i32> {
     None
 }
 
+/// Attempt to open a camera input either by index or URI.
 fn open_video_capture(uri: &str) -> Result<VideoCapture, CaptureError> {
     if let Some(index) = parse_device_index(uri) {
         for backend in [videoio::CAP_V4L, videoio::CAP_ANY] {
@@ -152,6 +157,7 @@ fn open_video_capture(uri: &str) -> Result<VideoCapture, CaptureError> {
     })
 }
 
+/// Apply common capture settings (resolution, fps, preferred pixel format).
 fn configure_camera(cap: &mut VideoCapture, target_size: (i32, i32), fps: f64) {
     let mut fourcc_set = false;
     if let Ok(mjpg) = videoio::VideoWriter::fourcc('M', 'J', 'P', 'G') {

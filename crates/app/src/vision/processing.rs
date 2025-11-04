@@ -1,3 +1,10 @@
+//! Detector worker threads responsible for batching frames and preparing
+//! annotation jobs.
+//!
+//! Processing workers own the heavy lifting: they convert frames into tensors,
+//! run inference, consolidate detections, and delegate to CPU or GPU annotation
+//! paths before handing jobs to the encoder.
+
 use std::{
     path::PathBuf,
     sync::{
@@ -25,6 +32,7 @@ use crate::vision::{
     watchdog::{HealthComponent, PipelineHealth},
 };
 
+/// Unit of work consumed by processing threads.
 pub(crate) struct FrameTask {
     pub(crate) frame: Frame,
     pub(crate) frame_number: u64,
@@ -32,6 +40,7 @@ pub(crate) struct FrameTask {
 }
 
 #[derive(Clone)]
+/// Initialiser payload shared across processing workers.
 pub(crate) struct DetectorInit {
     pub(crate) model_path: PathBuf,
     pub(crate) device: Device,
@@ -39,10 +48,15 @@ pub(crate) struct DetectorInit {
 }
 
 #[derive(Default)]
+/// Minimal tracker assigning monotonic IDs to detections for HUD display.
 pub(crate) struct SimpleTracker {
     next_id: i64,
 }
 
+/// Spawn a processing worker thread that owns a detector instance.
+///
+/// Each worker drains the frame queue, batches tensors, and hands completed
+/// annotation jobs to the encoder stage.
 pub(crate) fn spawn_processing_worker(
     detector_init: DetectorInit,
     tracker: Arc<Mutex<SimpleTracker>>,
@@ -134,6 +148,8 @@ pub(crate) fn spawn_processing_worker(
     })
 }
 
+/// Convert a batch of `FrameTask`s into encode jobs by running detector
+/// inference, annotation, and routing to CPU/GPU encode paths.
 pub(crate) fn process_frame_batch(
     detector: &Detector,
     tracker: &Arc<Mutex<SimpleTracker>>,
@@ -192,6 +208,8 @@ pub(crate) fn process_frame_batch(
     Ok(jobs)
 }
 
+/// Finalise an individual frame by drawing detections and packaging an
+/// `EncodeJob`.
 fn finalize_frame(
     detector: &Detector,
     tracker: &Arc<Mutex<SimpleTracker>>,
@@ -295,6 +313,7 @@ fn finalize_frame(
     }
 }
 
+/// Assign incremental track identifiers to detections for downstream HUD use.
 fn assign_tracks(tracker: &Arc<Mutex<SimpleTracker>>, detections: &mut [DetectionSummary]) {
     if let Ok(mut tracker) = tracker.lock() {
         for det in detections {

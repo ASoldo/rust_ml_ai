@@ -1,15 +1,25 @@
+//! Configuration parsing for the vision pipeline.
+//!
+//! This module owns translation of CLI arguments into a `VisionConfig` struct
+//! which downstream stages use without re-parsing flags.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Ingress transport used to source frames.
 pub enum SourceKind {
+    /// Local V4L devices or pre-recorded files.
     Device,
+    /// Real-time streaming protocol feeds.
     Rtsp,
+    /// UDP socket carrying H.264 via RTP.
     Udp,
 }
 
 impl SourceKind {
+    /// Infer the transport kind from a URI.
     pub(crate) fn from_uri(uri: &str) -> Self {
         if uri.starts_with("rtsp://") || uri.starts_with("rtsps://") {
             SourceKind::Rtsp
@@ -22,19 +32,33 @@ impl SourceKind {
 }
 
 #[derive(Clone, Debug)]
+/// Canonical configuration shared by every stage in the pipeline.
 pub struct VisionConfig {
+    /// Camera URI or device identifier.
     pub camera_uri: String,
+    /// Source transport used to acquire frames.
     pub source_kind: SourceKind,
+    /// TorchScript model path used by the detector workers.
     pub model_path: PathBuf,
+    /// Capture width streamed by the ingest component.
     pub width: i32,
+    /// Capture height streamed by the ingest component.
     pub height: i32,
+    /// Emit verbose logging (frame drops, detection details).
     pub verbose: bool,
+    /// Force CPU inference and annotation.
     pub use_cpu: bool,
+    /// Attempt NVDEC capture or decoding when supported.
     pub use_nvdec: bool,
+    /// Logical detector width, may differ from capture width when resizing.
     pub detector_width: i32,
+    /// Logical detector height, may differ from capture height when resizing.
     pub detector_height: i32,
+    /// JPEG quality used by CPU and GPU encoders.
     pub jpeg_quality: i32,
+    /// Number of parallel detector workers.
     pub processor_workers: usize,
+    /// Batch size processed per worker iteration.
     pub batch_size: usize,
 }
 
@@ -45,6 +69,11 @@ vision [--source <uri>] [--model <path>] [--width <px>] [--height <px>] \
 also supported: vision <uri> <model-path> <width> <height> [...flags...]";
 
 impl VisionConfig {
+    /// Parse CLI-style arguments into a `VisionConfig`.
+    ///
+    /// The function accepts both positional and flag-based arguments for
+    /// backwards compatibility with the original monolithic entrypoint.
+    /// Detailed errors with context are returned for invalid inputs.
     pub fn from_args(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(VISION_USAGE);
@@ -270,6 +299,7 @@ impl VisionConfig {
         })
     }
 
+    /// Derive a square detector size rounded up to 32-pixel alignment.
     fn default_detector_size(width: i32, height: i32) -> (i32, i32) {
         let max_dim = width.max(height).max(32);
         let aligned = ((max_dim + 31) / 32) * 32;
