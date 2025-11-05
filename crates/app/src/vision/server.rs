@@ -11,12 +11,13 @@ use actix_web::{
     http::header,
     web::{self, Bytes},
 };
+use actix_web::dev::Service;
 use anyhow::{Context, Result};
 use async_stream::stream;
 use serde::Deserialize;
 use serde_json::to_string;
 use tokio::sync::oneshot;
-use tracing::error;
+use tracing::{error, info_span, Instrument};
 
 use crate::vision::{
     data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
@@ -48,7 +49,7 @@ impl PreviewServer {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct FrameQuery {
     frame: Option<u64>,
 }
@@ -62,9 +63,29 @@ pub(crate) fn spawn_preview_server(
     let server_history = history.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let handle = telemetry::spawn_thread("vision-preview-server", move || {
-        if let Err(err) = actix_web::rt::System::new().block_on(async move {
+        const ACTIX_WORKERS: usize = 16;
+
+        let server_future = async move {
             let server = HttpServer::new(move || {
                 App::new()
+                    .wrap_fn(|req, srv| {
+                        let method = req.method().clone();
+                        let path = req.path().to_owned();
+                        let span = tracing::info_span!(
+                            "vision.http.request",
+                            method = %method,
+                            path = %path,
+                            status = tracing::field::Empty
+                        );
+                        let fut = srv.call(req);
+                        async move {
+                            let res = fut.instrument(span.clone()).await;
+                            if let Ok(ref response) = res {
+                                span.record("status", &tracing::field::display(response.status().as_u16()));
+                            }
+                            res
+                        }
+                    })
                     .app_data(web::Data::new(ServerState {
                         latest: server_shared.clone(),
                         history: server_history.clone(),
@@ -80,6 +101,7 @@ pub(crate) fn spawn_preview_server(
                     )
                     .route("/metrics", web::get().to(metrics_handler))
             })
+            .workers(ACTIX_WORKERS)
             .bind(("0.0.0.0", 8080))?
             .run();
 
@@ -90,7 +112,10 @@ pub(crate) fn spawn_preview_server(
             });
 
             server.await
-        }) {
+        }
+        .instrument(info_span!("vision.server.actix", workers = ACTIX_WORKERS as u64));
+
+        if let Err(err) = actix_web::rt::System::new().block_on(server_future) {
             error!("HTTP server error: {err}");
         }
     })
@@ -121,6 +146,7 @@ fn history_frame(history: &FrameHistory, frame_number: u64) -> Option<FramePacke
 }
 
 /// Return a single JPEG frame by sequence number or the latest frame.
+#[tracing::instrument(name = "vision.http.frame", skip(state))]
 async fn frame_handler(
     query: web::Query<FrameQuery>,
     state: web::Data<ServerState>,
@@ -155,6 +181,7 @@ async fn frame_handler(
 }
 
 /// Stream the MJPEG feed over a multipart response.
+#[tracing::instrument(name = "vision.http.stream_frames", skip(state))]
 async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {
@@ -191,6 +218,7 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
 }
 
 /// Render Prometheus metrics collected by the pipeline stages.
+#[tracing::instrument(name = "vision.http.metrics")]
 async fn metrics_handler() -> HttpResponse {
     if let Some(handle) = telemetry::prometheus_handle() {
         let body = handle.render();
@@ -206,6 +234,7 @@ async fn metrics_handler() -> HttpResponse {
 }
 
 /// Serve the default HUD HTML.
+#[tracing::instrument(name = "vision.http.index")]
 async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
@@ -213,6 +242,7 @@ async fn index_route() -> HttpResponse {
 }
 
 /// Serve the ATAK-style HUD.
+#[tracing::instrument(name = "vision.http.atak")]
 async fn atak_route() -> HttpResponse {
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
@@ -220,6 +250,7 @@ async fn atak_route() -> HttpResponse {
 }
 
 /// Return the most recent detection snapshot as JSON.
+#[tracing::instrument(name = "vision.http.detections", skip(state))]
 async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     let guard = match state.latest.lock() {
         Ok(guard) => guard,
@@ -238,6 +269,7 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
 }
 
 /// Stream detection snapshots as Server-Sent Events.
+#[tracing::instrument(name = "vision.http.stream_detections", skip(state))]
 async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {

@@ -1,6 +1,13 @@
 //! Telemetry helpers for tracing spans, Prometheus metrics, and optional console tooling.
 
-use std::{io, panic, path::Path, sync::OnceLock, thread, time::Duration};
+use std::{
+    io::{self, Write},
+    panic,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    thread,
+    time::Duration,
+};
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tracing_subscriber::{
@@ -19,6 +26,7 @@ static PROM_UPKEEP_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 pub(crate) struct TelemetryGuard {
     _default_guard: tracing::subscriber::DefaultGuard,
     _chrome_guard: Option<tracing_chrome::FlushGuard>,
+    chrome_trace_path: Option<PathBuf>,
 }
 
 /// Ensure the global metrics recorder is installed and return the Prometheus handle.
@@ -153,6 +161,7 @@ pub(crate) fn enter_runtime(opts: &TelemetryOptions) -> TelemetryGuard {
     TelemetryGuard {
         _default_guard: default_guard,
         _chrome_guard: chrome_guard,
+        chrome_trace_path: opts.chrome_trace_path.clone(),
     }
 }
 
@@ -185,4 +194,75 @@ fn build_chrome_layer(
         .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
     Ok((layer, guard))
+}
+
+impl Drop for TelemetryGuard {
+    fn drop(&mut self) {
+        let chrome_path = self.chrome_trace_path.clone();
+        if let Some(guard) = self._chrome_guard.take() {
+            guard.flush();
+            drop(guard);
+        }
+
+        if let Some(path) = chrome_path.as_ref() {
+            if let Err(err) = fix_async_ids(path) {
+                tracing::warn!("failed to normalise chrome trace {}: {err}", path.display());
+            }
+        }
+    }
+}
+
+fn fix_async_ids(path: &Path) -> io::Result<()> {
+    if !path.is_file() {
+        return Ok(());
+    }
+
+    let data = std::fs::read(path)?;
+    let mut events: Vec<serde_json::Value> = match serde_json::from_slice(&data) {
+        Ok(v) => v,
+        Err(err) => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, err));
+        }
+    };
+
+    let mut next_id: u64 = 1;
+    let mut stack: Vec<(u64, u64)> = Vec::new();
+
+    for entry in events.iter_mut() {
+        let Some(phase) = entry.get("ph").and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        match phase {
+            "b" => {
+                if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
+                    let new_id = next_id;
+                    next_id = next_id.saturating_add(1);
+                    entry["id"] = new_id.into();
+                    stack.push((old_id, new_id));
+                }
+            }
+            "e" => {
+                if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
+                    if let Some(pos) = stack.iter().rposition(|(stored_id, _)| *stored_id == old_id)
+                    {
+                        let (_, new_id) = stack.remove(pos);
+                        entry["id"] = new_id.into();
+                    } else {
+                        let new_id = next_id;
+                        next_id = next_id.saturating_add(1);
+                        entry["id"] = new_id.into();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let tmp_path = path.with_extension("json.tmp");
+    let mut file = std::fs::File::create(&tmp_path)?;
+    serde_json::to_writer(&mut file, &events)?;
+    file.write_all(b"\n")?;
+    std::fs::rename(tmp_path, path)?;
+    Ok(())
 }
