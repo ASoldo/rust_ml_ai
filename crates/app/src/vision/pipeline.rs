@@ -11,13 +11,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::TrySendError;
 use ml_core::tch::{Cuda, Device};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::vision::{
     SourceKind, VisionConfig,
@@ -26,6 +26,7 @@ use crate::vision::{
     processing::{DetectorInit, FrameTask, SimpleTracker, spawn_processing_worker},
     runtime::load_torch_cuda_runtime,
     server::spawn_preview_server,
+    telemetry,
     watchdog::{HealthComponent, PipelineHealth, WatchdogState, spawn_watchdog},
 };
 
@@ -85,6 +86,22 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         return Ok(PipelineOutcome::Graceful);
     }
 
+    let _telemetry_guard = telemetry::enter_runtime(&config.telemetry);
+    let _ = telemetry::init_metrics_recorder();
+    let pipeline_span = tracing::info_span!(
+        "vision.pipeline",
+        source = %config.camera_uri,
+        width = config.width,
+        height = config.height,
+        detector_width = config.detector_width,
+        detector_height = config.detector_height,
+        workers = config.processor_workers,
+        batch_size = config.batch_size,
+        use_cpu = config.use_cpu,
+        nvdec = config.use_nvdec
+    );
+    let _pipeline_span_guard = pipeline_span.enter();
+
     if !config.use_cpu {
         load_torch_cuda_runtime(config.verbose);
     }
@@ -97,26 +114,26 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
 
     let cuda_available = Cuda::is_available();
     let cuda_devices = Cuda::device_count();
-    info!(
+    debug!(
         "CUDA available: {} (devices: {})",
         cuda_available, cuda_devices
     );
 
-    info!(
+    debug!(
         "Capture source: {} ({:?})",
         config.camera_uri, config.source_kind
     );
-    info!(
+    debug!(
         "Detector input size: {}x{}",
         config.detector_width, config.detector_height
     );
     if config.detector_width != config.width || config.detector_height != config.height {
-        info!(
+        debug!(
             "Resizing frames for detector (capture {}x{} → detector {}x{})",
             config.width, config.height, config.detector_width, config.detector_height
         );
     }
-    info!(
+    debug!(
         "Processing workers: {} (batch size: {})",
         config.processor_workers, config.batch_size
     );
@@ -308,7 +325,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
 
     let mut frame_number: u64 = 0;
     let mut smoothed_fps: f32 = 0.0;
-    let mut last_instant = std::time::Instant::now();
+    let mut last_instant = Instant::now();
     let mut dropped_frames: u64 = 0;
     let mut restart_reason: Option<&'static str> = None;
 
@@ -318,12 +335,24 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
             break;
         }
 
-        match receiver.recv() {
+        let frame_result = tracing::info_span!("capture.recv").in_scope(|| receiver.recv());
+        match frame_result {
             Ok(frame) => match frame {
                 Ok(frame) => {
+                    let frame_span = tracing::info_span!(
+                        "frame",
+                        frame = frame_number.wrapping_add(1),
+                        width = frame.width,
+                        height = frame.height,
+                        timestamp = frame.timestamp_ms
+                    );
+                    let _frame_guard = frame_span.enter();
                     health.beat(HealthComponent::Capture);
                     frame_number = frame_number.wrapping_add(1);
-                    let now = std::time::Instant::now();
+
+                    let capture_stage_start = Instant::now();
+
+                    let now = Instant::now();
                     let elapsed = now.duration_since(last_instant).as_secs_f32();
                     last_instant = now;
                     if elapsed > 0.0 {
@@ -333,10 +362,21 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         } else {
                             0.9 * smoothed_fps + 0.1 * instant
                         };
+                        metrics::histogram!("vision_capture_frame_interval_seconds")
+                            .record(elapsed as f64);
                     }
+                    metrics::gauge!("vision_pipeline_fps").set(smoothed_fps as f64);
+
+                    let capture_span = tracing::info_span!(
+                        "capture.frame",
+                        frame = frame_number,
+                        fps = smoothed_fps,
+                        timestamp = frame.timestamp_ms
+                    );
+                    let _capture_guard = capture_span.enter();
 
                     if frame_number % 30 == 0 {
-                        info!(
+                        debug!(
                             "Capture heartbeat: frame #{}, {:.1} fps, ts={}",
                             frame_number, smoothed_fps, frame.timestamp_ms
                         );
@@ -346,11 +386,25 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         frame,
                         frame_number,
                         fps: smoothed_fps,
+                        enqueued_at: Instant::now(),
                     };
+                    let _dispatch_guard = tracing::info_span!(
+                        "capture.dispatch",
+                        frame = frame_number,
+                        queue_depth = work_tx.len()
+                    )
+                    .entered();
+
                     match work_tx.try_send(task) {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            metrics::gauge!("vision_queue_depth", "queue" => "processing")
+                                .set(work_tx.len() as f64);
+                        }
                         Err(TrySendError::Full(_)) => {
                             dropped_frames = dropped_frames.wrapping_add(1);
+                            metrics::counter!("vision_capture_dropped_frames_total").increment(1);
+                            metrics::gauge!("vision_queue_depth", "queue" => "processing")
+                                .set(work_tx.len() as f64);
                             if config.verbose {
                                 warn!(
                                     "Dropping frame #{frame_number} (processing backlog, dropped total: {})",
@@ -361,10 +415,15 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         Err(TrySendError::Disconnected(_)) => {
                             error!("Processing thread terminated unexpectedly");
                             restart_reason = Some("processing channel disconnected");
+                            metrics::histogram!("vision_stage_latency_seconds", "stage" => "capture")
+                                .record(capture_stage_start.elapsed().as_secs_f64());
                             pipeline_running.store(false, Ordering::SeqCst);
                             break;
                         }
                     }
+
+                    metrics::histogram!("vision_stage_latency_seconds", "stage" => "capture")
+                        .record(capture_stage_start.elapsed().as_secs_f64());
                 }
                 Err(err) => {
                     error!("Capture error: {err}");

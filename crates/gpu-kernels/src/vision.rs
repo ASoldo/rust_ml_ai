@@ -10,6 +10,7 @@ use cudarc::nvrtc::{self, Ptx};
 use nvjpeg_sys::*;
 
 use crate::Result;
+use tracing::info_span;
 
 /// Holds CUDA resources and scratch buffers for image preprocessing and annotation.
 pub struct VisionRuntime {
@@ -56,58 +57,79 @@ pub struct PreprocessOutput {
 impl VisionRuntime {
     /// Compile kernels and allocate the CUDA context for the given device.
     pub fn new(device_index: i32) -> Result<Self> {
-        let context = CudaContext::new(device_index as usize)?;
-        let module = context.load_module(Self::build_ptx()?)?;
-        let preprocess_fn = module.load_function("bgr_resize_normalize")?;
-        let nms_fn = module.load_function("nms_suppress")?;
-        let annotate_fn = module.load_function("annotate_overlays")?;
+        let init_span = info_span!("vision.runtime.init", device = device_index);
+        let _init_guard = init_span.enter();
+
+        let context = info_span!("vision.cuda.context", device = device_index)
+            .in_scope(|| CudaContext::new(device_index as usize))?;
+        let ptx = info_span!("vision.cuda.compile_ptx", device = device_index)
+            .in_scope(Self::build_ptx)?;
+        let module = info_span!("vision.cuda.module_load", device = device_index)
+            .in_scope(|| context.load_module(ptx))?;
+        let preprocess_fn = info_span!("vision.cuda.load_kernel", name = "bgr_resize_normalize")
+            .in_scope(|| module.load_function("bgr_resize_normalize"))?;
+        let nms_fn = info_span!("vision.cuda.load_kernel", name = "nms_suppress")
+            .in_scope(|| module.load_function("nms_suppress"))?;
+        let annotate_fn = info_span!("vision.cuda.load_kernel", name = "annotate_overlays")
+            .in_scope(|| module.load_function("annotate_overlays"))?;
         let stream = context.default_stream();
 
         let stream_ptr = stream.cu_stream() as cudaStream_t;
         let mut nv_handle: nvjpegHandle_t = ptr::null_mut();
-        Self::check_nvjpeg(
-            unsafe { nvjpegCreateSimple(&mut nv_handle) },
-            "nvjpegCreateSimple",
-        )?;
+        info_span!("vision.nvjpeg.create").in_scope(|| unsafe {
+            Self::check_nvjpeg(nvjpegCreateSimple(&mut nv_handle), "nvjpegCreateSimple")
+        })?;
 
         let mut encoder_state: nvjpegEncoderState_t = ptr::null_mut();
-        Self::check_nvjpeg(
-            unsafe { nvjpegEncoderStateCreate(nv_handle, &mut encoder_state, stream_ptr) },
-            "nvjpegEncoderStateCreate",
-        )?;
+        info_span!("vision.nvjpeg.encoder_state").in_scope(|| unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncoderStateCreate(nv_handle, &mut encoder_state, stream_ptr),
+                "nvjpegEncoderStateCreate",
+            )
+        })?;
 
         let mut encoder_params: nvjpegEncoderParams_t = ptr::null_mut();
-        Self::check_nvjpeg(
-            unsafe { nvjpegEncoderParamsCreate(nv_handle, &mut encoder_params, stream_ptr) },
-            "nvjpegEncoderParamsCreate",
-        )?;
+        info_span!("vision.nvjpeg.encoder_params").in_scope(|| unsafe {
+            Self::check_nvjpeg(
+                nvjpegEncoderParamsCreate(nv_handle, &mut encoder_params, stream_ptr),
+                "nvjpegEncoderParamsCreate",
+            )
+        })?;
 
         let default_quality: c_int = 85;
         unsafe {
-            Self::check_nvjpeg(
-                nvjpegEncoderParamsSetEncoding(
-                    encoder_params,
-                    nvjpegJpegEncoding_t_NVJPEG_ENCODING_BASELINE_DCT,
-                    stream_ptr,
-                ),
-                "nvjpegEncoderParamsSetEncoding",
-            )?;
-            Self::check_nvjpeg(
-                nvjpegEncoderParamsSetSamplingFactors(
-                    encoder_params,
-                    nvjpegChromaSubsampling_t_NVJPEG_CSS_444,
-                    stream_ptr,
-                ),
-                "nvjpegEncoderParamsSetSamplingFactors",
-            )?;
-            Self::check_nvjpeg(
-                nvjpegEncoderParamsSetOptimizedHuffman(encoder_params, 1, stream_ptr),
-                "nvjpegEncoderParamsSetOptimizedHuffman",
-            )?;
-            Self::check_nvjpeg(
-                nvjpegEncoderParamsSetQuality(encoder_params, default_quality, stream_ptr),
-                "nvjpegEncoderParamsSetQuality",
-            )?;
+            info_span!("vision.nvjpeg.configure", step = "encoding").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncoderParamsSetEncoding(
+                        encoder_params,
+                        nvjpegJpegEncoding_t_NVJPEG_ENCODING_BASELINE_DCT,
+                        stream_ptr,
+                    ),
+                    "nvjpegEncoderParamsSetEncoding",
+                )
+            })?;
+            info_span!("vision.nvjpeg.configure", step = "sampling").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncoderParamsSetSamplingFactors(
+                        encoder_params,
+                        nvjpegChromaSubsampling_t_NVJPEG_CSS_444,
+                        stream_ptr,
+                    ),
+                    "nvjpegEncoderParamsSetSamplingFactors",
+                )
+            })?;
+            info_span!("vision.nvjpeg.configure", step = "huffman").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncoderParamsSetOptimizedHuffman(encoder_params, 1, stream_ptr),
+                    "nvjpegEncoderParamsSetOptimizedHuffman",
+                )
+            })?;
+            info_span!("vision.nvjpeg.configure", step = "quality").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncoderParamsSetQuality(encoder_params, default_quality, stream_ptr),
+                    "nvjpegEncoderParamsSetQuality",
+                )
+            })?;
         }
 
         Ok(Self {
@@ -137,6 +159,14 @@ impl VisionRuntime {
 
     /// Encode the annotated frame buffer to JPEG using NVJPEG.
     pub fn encode_jpeg(&mut self, width: i32, height: i32, quality: c_int) -> Result<Vec<u8>> {
+        let span = info_span!(
+            "vision.gpu.encode_jpeg",
+            width = width,
+            height = height,
+            quality = quality
+        );
+        let _guard = span.enter();
+
         if self.resized_bgr.is_none() {
             return Err("no annotated frame available".into());
         }
@@ -145,10 +175,16 @@ impl VisionRuntime {
 
         if quality != self.jpeg_quality {
             unsafe {
-                Self::check_nvjpeg(
-                    nvjpegEncoderParamsSetQuality(self.nvjpeg_encoder_params, quality, stream_ptr),
-                    "nvjpegEncoderParamsSetQuality",
-                )?;
+                info_span!("vision.nvjpeg.configure", step = "quality_update").in_scope(|| {
+                    Self::check_nvjpeg(
+                        nvjpegEncoderParamsSetQuality(
+                            self.nvjpeg_encoder_params,
+                            quality,
+                            stream_ptr,
+                        ),
+                        "nvjpegEncoderParamsSetQuality",
+                    )
+                })?;
             }
             self.jpeg_quality = quality;
         }
@@ -160,59 +196,68 @@ impl VisionRuntime {
         image.pitch[0] = (width as usize) * 3;
 
         unsafe {
-            Self::check_nvjpeg(
-                nvjpegEncodeImage(
-                    self.nvjpeg_handle,
-                    self.nvjpeg_encoder_state,
-                    self.nvjpeg_encoder_params,
-                    &image,
-                    nvjpegInputFormat_t_NVJPEG_INPUT_BGRI,
-                    width,
-                    height,
-                    stream_ptr,
-                ),
-                "nvjpegEncodeImage",
-            )?;
+            info_span!("vision.nvjpeg.encode", stage = "launch").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncodeImage(
+                        self.nvjpeg_handle,
+                        self.nvjpeg_encoder_state,
+                        self.nvjpeg_encoder_params,
+                        &image,
+                        nvjpegInputFormat_t_NVJPEG_INPUT_BGRI,
+                        width,
+                        height,
+                        stream_ptr,
+                    ),
+                    "nvjpegEncodeImage",
+                )
+            })?;
         }
         drop(device_sync);
 
         let mut length: usize = 0;
         unsafe {
-            Self::check_nvjpeg(
-                nvjpegEncodeRetrieveBitstream(
-                    self.nvjpeg_handle,
-                    self.nvjpeg_encoder_state,
-                    ptr::null_mut(),
-                    &mut length,
-                    stream_ptr,
-                ),
-                "nvjpegEncodeRetrieveBitstream(size)",
-            )?;
+            info_span!("vision.nvjpeg.encode", stage = "query_size").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncodeRetrieveBitstream(
+                        self.nvjpeg_handle,
+                        self.nvjpeg_encoder_state,
+                        ptr::null_mut(),
+                        &mut length,
+                        stream_ptr,
+                    ),
+                    "nvjpegEncodeRetrieveBitstream(size)",
+                )
+            })?;
         }
 
         let mut output = vec![0u8; length];
         unsafe {
-            Self::check_nvjpeg(
-                nvjpegEncodeRetrieveBitstream(
-                    self.nvjpeg_handle,
-                    self.nvjpeg_encoder_state,
-                    output.as_mut_ptr(),
-                    &mut length,
-                    stream_ptr,
-                ),
-                "nvjpegEncodeRetrieveBitstream(data)",
-            )?;
+            info_span!("vision.nvjpeg.encode", stage = "download").in_scope(|| {
+                Self::check_nvjpeg(
+                    nvjpegEncodeRetrieveBitstream(
+                        self.nvjpeg_handle,
+                        self.nvjpeg_encoder_state,
+                        output.as_mut_ptr(),
+                        &mut length,
+                        stream_ptr,
+                    ),
+                    "nvjpegEncodeRetrieveBitstream(data)",
+                )
+            })?;
         }
         output.truncate(length);
-        self.stream.synchronize()?;
+        info_span!("vision.cuda.stream_sync", op = "nvjpeg")
+            .in_scope(|| self.stream.synchronize())?;
         Ok(output)
     }
 
     /// Compile CUDA kernels for preprocessing, annotation, and NMS.
     fn build_ptx() -> Result<Ptx> {
         const SOURCE: &str = include_str!("vision_kernels.cu");
-        nvrtc::compile_ptx(SOURCE)
-            .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
+        info_span!("vision.cuda.nvrtc", kernel = "vision").in_scope(|| {
+            nvrtc::compile_ptx(SOURCE)
+                .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
+        })
     }
 
     /// Map NVJPEG error codes into `Result`.
@@ -353,6 +398,16 @@ impl VisionRuntime {
         out_width: i32,
         out_height: i32,
     ) -> Result<PreprocessOutput> {
+        let span = info_span!(
+            "vision.gpu.preprocess",
+            width = in_width,
+            height = in_height,
+            out_width = out_width,
+            out_height = out_height,
+            bytes = bgr.len()
+        );
+        let _guard = span.enter();
+
         let num_bytes_in = bgr.len();
         let num_pixels_out = (out_width * out_height) as usize;
         let tensor_len = num_pixels_out * 3;
@@ -367,7 +422,12 @@ impl VisionRuntime {
 
         {
             let input_slice = self.input_bgr.as_mut().unwrap();
-            stream.memcpy_htod(bgr, input_slice)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = num_bytes_in
+            )
+            .in_scope(|| stream.memcpy_htod(bgr, input_slice))?;
         }
 
         let input_view = self.input_bgr.as_ref().unwrap().as_view();
@@ -381,7 +441,7 @@ impl VisionRuntime {
         };
 
         let launch = LaunchConfig::for_num_elems(num_pixels_out as u32);
-        unsafe {
+        info_span!("vision.cuda.kernel", name = "bgr_resize_normalize").in_scope(|| unsafe {
             stream
                 .launch_builder(&preprocess_fn)
                 .arg(&input_view)
@@ -391,13 +451,14 @@ impl VisionRuntime {
                 .arg(&out_height)
                 .arg(&mut tensor_view)
                 .arg(&mut output_view)
-                .launch(launch)?;
-        }
+                .launch(launch)
+        })?;
 
         drop(tensor_view);
         drop(output_view);
 
-        stream.synchronize()?;
+        info_span!("vision.cuda.stream_sync", op = "preprocess")
+            .in_scope(|| stream.synchronize())?;
 
         let tensor_buf = self.tensor_buffer.as_ref().unwrap();
         let (tensor_ptr, _sync) = tensor_buf.device_ptr(&stream);
@@ -417,24 +478,36 @@ impl VisionRuntime {
         num_boxes: usize,
         iou_threshold: f32,
     ) -> Result<Vec<i32>> {
+        let span = info_span!(
+            "vision.gpu.nms",
+            boxes = num_boxes,
+            threshold = iou_threshold
+        );
+        let _guard = span.enter();
+
         let stream = self.stream.clone();
         let nms_fn = self.nms_fn.clone();
         self.ensure_keep_flags(num_boxes)?;
         let launch = LaunchConfig::for_num_elems(1);
         {
             let keep_slice = self.keep_flags.as_mut().unwrap();
-            unsafe {
+            info_span!("vision.cuda.kernel", name = "nms_suppress").in_scope(|| unsafe {
                 stream
                     .launch_builder(&nms_fn)
                     .arg(&boxes_ptr)
                     .arg(&(num_boxes as i32))
                     .arg(&iou_threshold)
                     .arg(keep_slice)
-                    .launch(launch)?;
-            }
+                    .launch(launch)
+            })?;
         }
-        stream.synchronize()?;
-        let mut result = stream.memcpy_dtov(self.keep_flags.as_ref().unwrap())?;
+        info_span!("vision.cuda.stream_sync", op = "nms").in_scope(|| stream.synchronize())?;
+        let mut result = info_span!(
+            "vision.cuda.memcpy",
+            direction = "dtoh",
+            bytes = num_boxes * std::mem::size_of::<i32>()
+        )
+        .in_scope(|| stream.memcpy_dtov(self.keep_flags.as_ref().unwrap()))?;
         result.truncate(num_boxes);
         Ok(result)
     }
@@ -453,6 +526,15 @@ impl VisionRuntime {
         info_text: &[u8],
         info_origin: (i32, i32),
     ) -> Result<()> {
+        let span = info_span!(
+            "vision.gpu.annotate",
+            width = width,
+            height = height,
+            boxes = boxes.len() / 4,
+            labels = label_offsets.len()
+        );
+        let _guard = span.enter();
+
         if self.resized_bgr.is_none() {
             return Ok(());
         }
@@ -469,27 +551,57 @@ impl VisionRuntime {
 
         {
             let buf = self.boxes_scratch.as_mut().unwrap();
-            stream.memcpy_htod(boxes, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = boxes.len() * std::mem::size_of::<i32>()
+            )
+            .in_scope(|| stream.memcpy_htod(boxes, buf))?;
         }
         {
             let buf = self.label_positions.as_mut().unwrap();
-            stream.memcpy_htod(label_positions, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = label_positions.len() * std::mem::size_of::<i32>()
+            )
+            .in_scope(|| stream.memcpy_htod(label_positions, buf))?;
         }
         {
             let buf = self.label_offsets.as_mut().unwrap();
-            stream.memcpy_htod(label_offsets, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = label_offsets.len() * std::mem::size_of::<i32>()
+            )
+            .in_scope(|| stream.memcpy_htod(label_offsets, buf))?;
         }
         {
             let buf = self.label_lengths.as_mut().unwrap();
-            stream.memcpy_htod(label_lengths, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = label_lengths.len() * std::mem::size_of::<i32>()
+            )
+            .in_scope(|| stream.memcpy_htod(label_lengths, buf))?;
         }
         {
             let buf = self.label_chars.as_mut().unwrap();
-            stream.memcpy_htod(label_chars, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = label_chars.len()
+            )
+            .in_scope(|| stream.memcpy_htod(label_chars, buf))?;
         }
         {
             let buf = self.info_text.as_mut().unwrap();
-            stream.memcpy_htod(info_text, buf)?;
+            info_span!(
+                "vision.cuda.memcpy",
+                direction = "htod",
+                bytes = info_text.len()
+            )
+            .in_scope(|| stream.memcpy_htod(info_text, buf))?;
         }
 
         let mut output_view = {
@@ -506,7 +618,7 @@ impl VisionRuntime {
         let num_boxes = (boxes.len() / 4) as i32;
         let launch = LaunchConfig::for_num_elems(num_boxes.max(1) as u32);
 
-        unsafe {
+        info_span!("vision.cuda.kernel", name = "annotate_overlays").in_scope(|| unsafe {
             stream
                 .launch_builder(&annotate_fn)
                 .arg(&mut output_view)
@@ -522,8 +634,8 @@ impl VisionRuntime {
                 .arg(&(info_text.len() as i32))
                 .arg(&info_origin.0)
                 .arg(&info_origin.1)
-                .launch(launch)?;
-        }
+                .launch(launch)
+        })?;
 
         drop(output_view);
         Ok(())
@@ -532,11 +644,15 @@ impl VisionRuntime {
     /// Downloads the resized BGR frame into host memory.
     /// Download the resized BGR buffer into host memory.
     pub fn download_bgr(&self, width: i32, height: i32) -> Result<Vec<u8>> {
+        let span = info_span!("vision.gpu.download", width = width, height = height);
+        let _guard = span.enter();
         let len = (width as usize) * (height as usize) * 3;
         if let Some(ref buf) = self.resized_bgr {
             let mut host = vec![0u8; len];
-            self.stream.memcpy_dtoh(buf, host.as_mut_slice())?;
-            self.stream.synchronize()?;
+            info_span!("vision.cuda.memcpy", direction = "dtoh", bytes = len)
+                .in_scope(|| self.stream.memcpy_dtoh(buf, host.as_mut_slice()))?;
+            info_span!("vision.cuda.stream_sync", op = "download")
+                .in_scope(|| self.stream.synchronize())?;
             Ok(host)
         } else {
             Ok(vec![0u8; len])

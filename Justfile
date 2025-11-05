@@ -6,6 +6,11 @@ WITH_TCH_FEATURE := "with-tch"
 MNIST_DATA_DIR := "data/mnist"
 MNIST_MODEL_PATH := "models/mnist-linear.ot"
 VISION_MODEL_PATH := "models/yolov12n-face.torchscript"
+VISION_CAMERA := "/dev/video0"
+VISION_WIDTH := "640"
+VISION_HEIGHT := "640"
+VISION_PROCESSORS := "2"
+VISION_BATCH_SIZE := "2"
 
 default:
     @just --list
@@ -44,15 +49,20 @@ mnist-predict image_path model_path=MNIST_MODEL_PATH device='':
     {{CARGO}} run -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- mnist-predict {{model_path}} {{image_path}} {{device}}
 
 # vision
-vision camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
-    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}} --processors 2 --batch-size 2
-
-vision-batch camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='':
+vision *flags:
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
-    vision {{camera}} {{model}} {{width}} {{height}} {{flags}} --processors 4 --batch-size 2
+    vision {{VISION_CAMERA}} {{VISION_MODEL_PATH}} {{VISION_WIDTH}} {{VISION_HEIGHT}} \
+    --processors {{VISION_PROCESSORS}} --batch-size {{VISION_BATCH_SIZE}} {{flags}}
 
-vision-nvdec camera='/dev/video0' model=VISION_MODEL_PATH width='640' height='640' flags='--nvdec':
-    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- vision {{camera}} {{model}} {{width}} {{height}} {{flags}}
+vision-batch *flags:
+    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
+    vision {{VISION_CAMERA}} {{VISION_MODEL_PATH}} {{VISION_WIDTH}} {{VISION_HEIGHT}} \
+    --processors 4 --batch-size 2 {{flags}}
+
+vision-nvdec *flags:
+    {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
+    vision {{VISION_CAMERA}} {{VISION_MODEL_PATH}} {{VISION_WIDTH}} {{VISION_HEIGHT}} \
+    --nvdec --processors {{VISION_PROCESSORS}} --batch-size {{VISION_BATCH_SIZE}} {{flags}}
 
 vision-gdb:
     sudo gdb -p $(pgrep -f 'vision /dev/video0')

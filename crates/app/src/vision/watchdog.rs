@@ -16,6 +16,8 @@ use std::{
 
 use tracing::error;
 
+use crate::vision::telemetry;
+
 /// Sleep interval between watchdog health checks.
 pub(crate) const WATCHDOG_POLL_INTERVAL_MS: u64 = 500;
 /// Time without a heartbeat before a component is considered stalled.
@@ -130,24 +132,22 @@ pub(crate) fn spawn_watchdog(
     shutdown: Arc<AtomicBool>,
     state: Arc<WatchdogState>,
 ) -> std::thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("vision-watchdog".into())
-        .spawn(move || {
-            while running.load(Ordering::Relaxed) && !shutdown.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(WATCHDOG_POLL_INTERVAL_MS));
-                let now = current_millis();
-                if let Some(component) = health.stale_component(now) {
-                    error!(
-                        "Watchdog detected stalled {} stage; requesting pipeline restart",
-                        component.label()
-                    );
-                    state.arm(component);
-                    running.store(false, Ordering::SeqCst);
-                    break;
-                }
+    telemetry::spawn_thread("vision-watchdog", move || {
+        while running.load(Ordering::Relaxed) && !shutdown.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_millis(WATCHDOG_POLL_INTERVAL_MS));
+            let now = current_millis();
+            if let Some(component) = health.stale_component(now) {
+                error!(
+                    "Watchdog detected stalled {} stage; requesting pipeline restart",
+                    component.label()
+                );
+                state.arm(component);
+                running.store(false, Ordering::SeqCst);
+                break;
             }
-        })
-        .expect("failed to spawn watchdog thread")
+        }
+    })
+    .expect("failed to spawn watchdog thread")
 }
 
 fn current_millis() -> u64 {

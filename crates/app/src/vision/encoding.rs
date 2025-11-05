@@ -10,6 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
+    time::Instant,
 };
 
 use anyhow::{Result, anyhow};
@@ -19,6 +20,7 @@ use tracing::error;
 
 use crate::vision::{
     data::{DetectionSummary, FRAME_HISTORY_CAPACITY, FrameHistory, FramePacket, SharedFrame},
+    telemetry,
     watchdog::{HealthComponent, PipelineHealth},
 };
 
@@ -53,37 +55,80 @@ pub(crate) fn spawn_encode_worker(
     health: Arc<PipelineHealth>,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
+    telemetry::spawn_thread("vision-encoding", move || {
+        let worker_span = tracing::info_span!("encoding.worker");
+        let _worker_guard = worker_span.enter();
+        let depth_probe = encode_rx.clone();
         for job in encode_rx {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
+            metrics::gauge!("vision_queue_depth", "queue" => "encoding")
+                .set(depth_probe.len() as f64);
+
+            let encode_start = Instant::now();
+            let path_label: &'static str;
             let packet_result = match job {
-                EncodeJob::Cpu(packet) => Ok(packet),
-                EncodeJob::Gpu(task) => encode_gpu_frame(task),
+                EncodeJob::Cpu(packet) => {
+                    path_label = "cpu";
+                    Ok(packet)
+                }
+                EncodeJob::Gpu(task) => {
+                    path_label = "gpu";
+                    encode_gpu_frame(task)
+                }
             };
 
             match packet_result {
                 Ok(packet) => {
+                    let job_span = tracing::info_span!(
+                        "encoding.job",
+                        path = path_label,
+                        frame = packet.frame_number,
+                        fps = packet.fps
+                    );
+                    let _job_guard = job_span.enter();
+
                     health.beat(HealthComponent::Encoder);
-                    if let Ok(mut guard) = history.lock() {
-                        guard.push_back(packet.clone());
-                        if guard.len() > FRAME_HISTORY_CAPACITY {
-                            guard.pop_front();
+                    tracing::info_span!("encoding.sink", stage = "history").in_scope(|| {
+                        if let Ok(mut guard) = history.lock() {
+                            guard.push_back(packet.clone());
+                            if guard.len() > FRAME_HISTORY_CAPACITY {
+                                guard.pop_front();
+                            }
                         }
-                    }
-                    if let Ok(mut guard) = shared.lock() {
-                        *guard = Some(packet);
+                    });
+                    tracing::info_span!("encoding.sink", stage = "latest").in_scope(|| {
+                        if let Ok(mut guard) = shared.lock() {
+                            *guard = Some(packet);
+                        }
+                    });
+
+                    let elapsed = encode_start.elapsed().as_secs_f64();
+                    metrics::histogram!("vision_stage_latency_seconds", "stage" => "encoding")
+                        .record(elapsed);
+                    metrics::histogram!("vision_encoding_seconds", "path" => path_label)
+                        .record(elapsed);
+                    if path_label == "gpu" {
+                        metrics::histogram!("vision_gpu_encode_seconds").record(elapsed);
                     }
                 }
                 Err(err) => {
                     error!("Encode stage error: {err}");
+                    metrics::counter!("vision_encoding_errors_total", "path" => path_label)
+                        .increment(1);
+                    let elapsed = encode_start.elapsed().as_secs_f64();
+                    metrics::histogram!("vision_stage_latency_seconds", "stage" => "encoding")
+                        .record(elapsed);
+                    metrics::histogram!("vision_encoding_seconds", "path" => path_label)
+                        .record(elapsed);
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
             }
         }
     })
+    .expect("failed to spawn encoding worker")
 }
 
 /// Encode a GPU-annotated frame into a `FramePacket`.
@@ -99,6 +144,15 @@ pub(crate) fn encode_gpu_frame(job: GpuEncodeJob) -> Result<FramePacket> {
         jpeg_quality,
     } = job;
 
+    let nvjpeg_span = tracing::info_span!(
+        "encoding.nvjpeg",
+        frame = frame_number,
+        width = width,
+        height = height
+    );
+    let _nvjpeg_guard = nvjpeg_span.enter();
+    let encode_start = Instant::now();
+
     let mut guard = runtime
         .lock()
         .map_err(|_| anyhow!("vision runtime poisoned"))?;
@@ -106,6 +160,8 @@ pub(crate) fn encode_gpu_frame(job: GpuEncodeJob) -> Result<FramePacket> {
     let buffer = guard
         .encode_jpeg(width, height, quality)
         .map_err(|err| anyhow!("nvjpeg encode failed: {err}"))?;
+
+    metrics::histogram!("vision_gpu_nvjpeg_seconds").record(encode_start.elapsed().as_secs_f64());
 
     Ok(FramePacket {
         jpeg: buffer,

@@ -26,4 +26,5 @@ mod pipeline;
 mod processing;
 mod runtime;
 mod server;
+mod telemetry;
 mod watchdog;

@@ -3,7 +3,10 @@
 //! The CPU path draws overlays into an `ImageBuffer` using software rasterisation
 //! whereas the GPU path uses CUDA kernels via `VisionRuntime`.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use anyhow::{Result, anyhow};
 use gpu_kernels::VisionRuntime;
@@ -23,55 +26,63 @@ pub(crate) fn annotate_frame_cpu(
     summaries: Vec<DetectionSummary>,
     jpeg_quality: i32,
 ) -> Result<FramePacket> {
+    let span = tracing::info_span!("annotation.cpu", frame = frame_number, fps = fps);
+    let _span_guard = span.enter();
+    let annotate_start = Instant::now();
+
     let width = frame.width as u32;
     let height = frame.height as u32;
     let rgba = bgr_to_rgba(&frame.data);
     let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_vec(width, height, rgba)
         .ok_or_else(|| anyhow!("failed to convert frame into image buffer"))?;
 
-    for summary in &summaries {
-        let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
-        let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
-        let right = summary.bbox[2].clamp(0.0, (width - 1) as f32);
-        let bottom = summary.bbox[3].clamp(0.0, (height - 1) as f32);
-        draw_rectangle(
-            &mut image,
-            left.round() as i32,
-            top.round() as i32,
-            right.round() as i32,
-            bottom.round() as i32,
-            Rgba([0, 255, 0, 255]),
-        );
-    }
+    tracing::info_span!("annotation.cpu.draw_boxes").in_scope(|| {
+        for summary in &summaries {
+            let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
+            let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
+            let right = summary.bbox[2].clamp(0.0, (width - 1) as f32);
+            let bottom = summary.bbox[3].clamp(0.0, (height - 1) as f32);
+            draw_rectangle(
+                &mut image,
+                left.round() as i32,
+                top.round() as i32,
+                right.round() as i32,
+                bottom.round() as i32,
+                Rgba([0, 255, 0, 255]),
+            );
+        }
+    });
 
-    for summary in &summaries {
-        let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
-        let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
-        let label_text = format!(
-            "{} {} {:.0}%",
-            summary.class,
-            summary.track_id,
-            summary.score * 100.0
-        );
-        let label_x = left.round() as i32;
-        let label_y = (top.round() as i32 - 12).max(0);
-        let text_width = label_text.chars().count() as i32 * 6;
-        fill_rect(
-            &mut image,
-            label_x,
-            label_y,
-            label_x + text_width,
-            label_y + 8,
-            Rgba([0, 0, 0, 180]),
-        );
-        draw_label(
-            &mut image,
-            label_x,
-            label_y,
-            &label_text,
-            Rgba([0, 255, 0, 255]),
-        );
-    }
+    tracing::info_span!("annotation.cpu.draw_labels").in_scope(|| {
+        for summary in &summaries {
+            let left = summary.bbox[0].clamp(0.0, (width - 1) as f32);
+            let top = summary.bbox[1].clamp(0.0, (height - 1) as f32);
+            let label_text = format!(
+                "{} {} {:.0}%",
+                summary.class,
+                summary.track_id,
+                summary.score * 100.0
+            );
+            let label_x = left.round() as i32;
+            let label_y = (top.round() as i32 - 12).max(0);
+            let text_width = label_text.chars().count() as i32 * 6;
+            fill_rect(
+                &mut image,
+                label_x,
+                label_y,
+                label_x + text_width,
+                label_y + 8,
+                Rgba([0, 0, 0, 180]),
+            );
+            draw_label(
+                &mut image,
+                label_x,
+                label_y,
+                &label_text,
+                Rgba([0, 255, 0, 255]),
+            );
+        }
+    });
 
     let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps);
     let info_width = (info.chars().count() as i32 * 6).min(width as i32);
@@ -96,17 +107,24 @@ pub(crate) fn annotate_frame_cpu(
     let rgb = DynamicImage::ImageRgba8(image).to_rgb8();
     let mut buffer = Vec::new();
     let quality = jpeg_quality.clamp(1, 100) as u8;
-    JpegEncoder::new_with_quality(&mut buffer, quality)
-        .encode_image(&rgb)
-        .map_err(|err| anyhow!("JPEG encode failed: {err}"))?;
+    tracing::info_span!("annotation.cpu.encode").in_scope(|| {
+        JpegEncoder::new_with_quality(&mut buffer, quality)
+            .encode_image(&rgb)
+            .map_err(|err| anyhow!("JPEG encode failed: {err}"))
+    })?;
 
-    Ok(FramePacket {
+    let packet = FramePacket {
         jpeg: buffer,
         detections: summaries,
         timestamp_ms: frame.timestamp_ms,
         frame_number,
         fps,
-    })
+    };
+
+    metrics::histogram!("vision_annotation_seconds", "path" => "cpu")
+        .record(annotate_start.elapsed().as_secs_f64());
+
+    Ok(packet)
 }
 
 /// Stage a GPU annotation job, returning a `GpuEncodeJob` that the encoder
@@ -122,6 +140,10 @@ pub(crate) fn annotate_frame_gpu(
     labels: &[String],
     jpeg_quality: i32,
 ) -> Result<GpuEncodeJob> {
+    let annot_span = tracing::info_span!("annotation.gpu", frame = frame_number, fps = fps);
+    let _annot_guard = annot_span.enter();
+    let annotate_start = Instant::now();
+
     let width = frame.width;
     let height = frame.height;
 
@@ -130,46 +152,64 @@ pub(crate) fn annotate_frame_gpu(
             .lock()
             .map_err(|_| anyhow!("vision runtime poisoned"))?;
 
-        let mut boxes_flat = Vec::with_capacity(boxes_px.len() * 4);
-        for b in boxes_px {
-            boxes_flat.extend_from_slice(b);
-        }
+        let (boxes_flat, label_positions_flat, offsets, lengths, chars, info, info_pos) =
+            tracing::info_span!("annotation.gpu.prepare").in_scope(|| {
+                let mut boxes_flat = Vec::with_capacity(boxes_px.len() * 4);
+                for b in boxes_px {
+                    boxes_flat.extend_from_slice(b);
+                }
 
-        let mut label_positions_flat = Vec::with_capacity(label_positions.len() * 2);
-        for (x, y) in label_positions {
-            label_positions_flat.push(*x);
-            label_positions_flat.push(*y);
-        }
+                let mut label_positions_flat = Vec::with_capacity(label_positions.len() * 2);
+                for (x, y) in label_positions {
+                    label_positions_flat.push(*x);
+                    label_positions_flat.push(*y);
+                }
 
-        let mut offsets = Vec::with_capacity(labels.len());
-        let mut lengths = Vec::with_capacity(labels.len());
-        let mut chars = Vec::new();
-        for text in labels {
-            offsets.push(chars.len() as i32);
-            let upper = text.to_uppercase();
-            chars.extend_from_slice(upper.as_bytes());
-            lengths.push(upper.len() as i32);
-        }
+                let mut offsets = Vec::with_capacity(labels.len());
+                let mut lengths = Vec::with_capacity(labels.len());
+                let mut chars = Vec::new();
+                for text in labels {
+                    offsets.push(chars.len() as i32);
+                    let upper = text.to_uppercase();
+                    chars.extend_from_slice(upper.as_bytes());
+                    lengths.push(upper.len() as i32);
+                }
 
-        let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps).to_uppercase();
-        let info_width = ((info.chars().count() as i32) * 6).min(width as i32);
-        let info_x = (width as i32 - info_width - 4).max(0);
-        let info_y = (height as i32 - 12).max(0);
+                let info = format!("FRAME {:06}  FPS {:4.1}", frame_number, fps).to_uppercase();
+                let info_width = ((info.chars().count() as i32) * 6).min(width as i32);
+                let info_x = (width as i32 - info_width - 4).max(0);
+                let info_y = (height as i32 - 12).max(0);
 
-        guard
-            .annotate(
-                width,
-                height,
-                &boxes_flat,
-                &label_positions_flat,
-                &offsets,
-                &lengths,
-                &chars,
-                info.as_bytes(),
-                (info_x, info_y),
-            )
-            .map_err(|err| anyhow!("annotation kernel failed: {err}"))?;
+                Ok::<_, anyhow::Error>((
+                    boxes_flat,
+                    label_positions_flat,
+                    offsets,
+                    lengths,
+                    chars,
+                    info,
+                    (info_x, info_y),
+                ))
+            })?;
+
+        tracing::info_span!("annotation.gpu.annotate_kernel").in_scope(|| {
+            guard
+                .annotate(
+                    width,
+                    height,
+                    &boxes_flat,
+                    &label_positions_flat,
+                    &offsets,
+                    &lengths,
+                    &chars,
+                    info.as_bytes(),
+                    info_pos,
+                )
+                .map_err(|err| anyhow!("annotation kernel failed: {err}"))
+        })?;
     }
+
+    metrics::histogram!("vision_annotation_seconds", "path" => "gpu")
+        .record(annotate_start.elapsed().as_secs_f64());
 
     Ok(GpuEncodeJob {
         runtime: runtime.clone(),

@@ -18,7 +18,10 @@ use serde_json::to_string;
 use tokio::sync::oneshot;
 use tracing::error;
 
-use crate::vision::data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame};
+use crate::vision::{
+    data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
+    telemetry,
+};
 
 /// Shared state backing HTTP handlers.
 pub(crate) struct ServerState {
@@ -58,41 +61,40 @@ pub(crate) fn spawn_preview_server(
     let server_shared = shared.clone();
     let server_history = history.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let handle = std::thread::Builder::new()
-        .name("vision-preview-server".into())
-        .spawn(move || {
-            if let Err(err) = actix_web::rt::System::new().block_on(async move {
-                let server = HttpServer::new(move || {
-                    App::new()
-                        .app_data(web::Data::new(ServerState {
-                            latest: server_shared.clone(),
-                            history: server_history.clone(),
-                        }))
-                        .route("/atak", web::get().to(atak_route))
-                        .route("/", web::get().to(index_route))
-                        .route("/frame.jpg", web::get().to(frame_handler))
-                        .route("/stream.mjpg", web::get().to(stream_handler))
-                        .route("/detections", web::get().to(detections_handler))
-                        .route(
-                            "/stream_detections",
-                            web::get().to(stream_detections_handler),
-                        )
-                })
-                .bind(("0.0.0.0", 8080))?
-                .run();
+    let handle = telemetry::spawn_thread("vision-preview-server", move || {
+        if let Err(err) = actix_web::rt::System::new().block_on(async move {
+            let server = HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(ServerState {
+                        latest: server_shared.clone(),
+                        history: server_history.clone(),
+                    }))
+                    .route("/atak", web::get().to(atak_route))
+                    .route("/", web::get().to(index_route))
+                    .route("/frame.jpg", web::get().to(frame_handler))
+                    .route("/stream.mjpg", web::get().to(stream_handler))
+                    .route("/detections", web::get().to(detections_handler))
+                    .route(
+                        "/stream_detections",
+                        web::get().to(stream_detections_handler),
+                    )
+                    .route("/metrics", web::get().to(metrics_handler))
+            })
+            .bind(("0.0.0.0", 8080))?
+            .run();
 
-                let srv_handle = server.handle();
-                actix_web::rt::spawn(async move {
-                    let _ = shutdown_rx.await;
-                    srv_handle.stop(true).await;
-                });
+            let srv_handle = server.handle();
+            actix_web::rt::spawn(async move {
+                let _ = shutdown_rx.await;
+                srv_handle.stop(true).await;
+            });
 
-                server.await
-            }) {
-                error!("HTTP server error: {err}");
-            }
-        })
-        .context("Failed to spawn preview server thread")?;
+            server.await
+        }) {
+            error!("HTTP server error: {err}");
+        }
+    })
+    .context("Failed to spawn preview server thread")?;
     Ok(PreviewServer {
         shutdown: Some(shutdown_tx),
         handle: Some(handle),
@@ -186,6 +188,21 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
         .append_header(("Cache-Control", "no-cache"))
         .append_header(("Content-Type", "multipart/x-mixed-replace; boundary=frame"))
         .streaming(stream)
+}
+
+/// Render Prometheus metrics collected by the pipeline stages.
+async fn metrics_handler() -> HttpResponse {
+    if let Some(handle) = telemetry::prometheus_handle() {
+        let body = handle.render();
+        return HttpResponse::Ok()
+            .insert_header((header::CONTENT_TYPE, "text/plain; version=0.0.4"))
+            .append_header((header::CACHE_CONTROL, "no-cache"))
+            .body(body);
+    }
+
+    HttpResponse::ServiceUnavailable()
+        .append_header((header::RETRY_AFTER, "1"))
+        .body("metrics recorder not initialised")
 }
 
 /// Serve the default HUD HTML.

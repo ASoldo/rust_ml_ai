@@ -61,6 +61,17 @@ pub struct VisionConfig {
     pub processor_workers: usize,
     /// Batch size processed per worker iteration.
     pub batch_size: usize,
+    /// Telemetry and instrumentation options.
+    pub telemetry: TelemetryOptions,
+}
+
+#[derive(Clone, Debug, Default)]
+/// Optional telemetry knobs for tracing and runtime inspection.
+pub struct TelemetryOptions {
+    /// Write a Chrome trace JSON file capturing pipeline spans.
+    pub chrome_trace_path: Option<PathBuf>,
+    /// Enable the Tokio console subscriber for live task/queue inspection.
+    pub enable_tokio_console: bool,
 }
 
 /// CLI arguments accepted by the `vision` subcommand.
@@ -115,6 +126,12 @@ pub struct VisionCliArgs {
     /// Detector batch size.
     #[arg(long = "batch-size", value_name = "N")]
     pub batch_size: Option<usize>,
+    /// Emit Chrome trace JSON for post-mortem analysis.
+    #[arg(long = "chrome-trace", value_name = "PATH")]
+    pub chrome_trace: Option<PathBuf>,
+    /// Enable the Tokio console instrumentation server.
+    #[arg(long = "tokio-console", action = clap::ArgAction::SetTrue)]
+    pub tokio_console: bool,
 }
 
 impl TryFrom<VisionCliArgs> for VisionConfig {
@@ -169,6 +186,11 @@ impl TryFrom<VisionCliArgs> for VisionConfig {
             bail!("--batch-size must be at least 1");
         }
 
+        let telemetry = TelemetryOptions {
+            chrome_trace_path: args.chrome_trace,
+            enable_tokio_console: args.tokio_console,
+        };
+
         let source_kind = SourceKind::from_uri(&camera_uri);
 
         Ok(Self {
@@ -185,6 +207,7 @@ impl TryFrom<VisionCliArgs> for VisionConfig {
             jpeg_quality,
             processor_workers,
             batch_size,
+            telemetry,
         })
     }
 }
