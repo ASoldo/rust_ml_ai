@@ -10,7 +10,7 @@ use cudarc::nvrtc::{self, Ptx};
 use nvjpeg_sys::*;
 
 use crate::Result;
-use tracing::{info_span, trace_span};
+use tracing::info_span;
 
 /// Holds CUDA resources and scratch buffers for image preprocessing and annotation.
 pub struct VisionRuntime {
@@ -246,7 +246,7 @@ impl VisionRuntime {
             })?;
         }
         output.truncate(length);
-        trace_span!("vision.cuda.stream_sync", op = "nvjpeg")
+        info_span!("vision.cuda.stream_sync", op = "nvjpeg")
             .in_scope(|| self.stream.synchronize())?;
         Ok(output)
     }
@@ -422,7 +422,7 @@ impl VisionRuntime {
 
         {
             let input_slice = self.input_bgr.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = num_bytes_in
@@ -441,7 +441,7 @@ impl VisionRuntime {
         };
 
         let launch = LaunchConfig::for_num_elems(num_pixels_out as u32);
-        trace_span!("vision.cuda.kernel", name = "bgr_resize_normalize").in_scope(|| unsafe {
+        info_span!("vision.cuda.kernel", name = "bgr_resize_normalize").in_scope(|| unsafe {
             stream
                 .launch_builder(&preprocess_fn)
                 .arg(&input_view)
@@ -457,7 +457,7 @@ impl VisionRuntime {
         drop(tensor_view);
         drop(output_view);
 
-        trace_span!("vision.cuda.stream_sync", op = "preprocess")
+        info_span!("vision.cuda.stream_sync", op = "preprocess")
             .in_scope(|| stream.synchronize())?;
 
         let tensor_buf = self.tensor_buffer.as_ref().unwrap();
@@ -491,7 +491,7 @@ impl VisionRuntime {
         let launch = LaunchConfig::for_num_elems(1);
         {
             let keep_slice = self.keep_flags.as_mut().unwrap();
-            trace_span!("vision.cuda.kernel", name = "nms_suppress").in_scope(|| unsafe {
+            info_span!("vision.cuda.kernel", name = "nms_suppress").in_scope(|| unsafe {
                 stream
                     .launch_builder(&nms_fn)
                     .arg(&boxes_ptr)
@@ -501,8 +501,8 @@ impl VisionRuntime {
                     .launch(launch)
             })?;
         }
-        trace_span!("vision.cuda.stream_sync", op = "nms").in_scope(|| stream.synchronize())?;
-        let mut result = trace_span!(
+        info_span!("vision.cuda.stream_sync", op = "nms").in_scope(|| stream.synchronize())?;
+        let mut result = info_span!(
             "vision.cuda.memcpy",
             direction = "dtoh",
             bytes = num_boxes * std::mem::size_of::<i32>()
@@ -551,7 +551,7 @@ impl VisionRuntime {
 
         {
             let buf = self.boxes_scratch.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = boxes.len() * std::mem::size_of::<i32>()
@@ -560,7 +560,7 @@ impl VisionRuntime {
         }
         {
             let buf = self.label_positions.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = label_positions.len() * std::mem::size_of::<i32>()
@@ -569,7 +569,7 @@ impl VisionRuntime {
         }
         {
             let buf = self.label_offsets.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = label_offsets.len() * std::mem::size_of::<i32>()
@@ -578,7 +578,7 @@ impl VisionRuntime {
         }
         {
             let buf = self.label_lengths.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = label_lengths.len() * std::mem::size_of::<i32>()
@@ -587,7 +587,7 @@ impl VisionRuntime {
         }
         {
             let buf = self.label_chars.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = label_chars.len()
@@ -596,7 +596,7 @@ impl VisionRuntime {
         }
         {
             let buf = self.info_text.as_mut().unwrap();
-            trace_span!(
+            info_span!(
                 "vision.cuda.memcpy",
                 direction = "htod",
                 bytes = info_text.len()
@@ -618,7 +618,7 @@ impl VisionRuntime {
         let num_boxes = (boxes.len() / 4) as i32;
         let launch = LaunchConfig::for_num_elems(num_boxes.max(1) as u32);
 
-        trace_span!("vision.cuda.kernel", name = "annotate_overlays").in_scope(|| unsafe {
+        info_span!("vision.cuda.kernel", name = "annotate_overlays").in_scope(|| unsafe {
             stream
                 .launch_builder(&annotate_fn)
                 .arg(&mut output_view)
@@ -649,9 +649,9 @@ impl VisionRuntime {
         let len = (width as usize) * (height as usize) * 3;
         if let Some(ref buf) = self.resized_bgr {
             let mut host = vec![0u8; len];
-            trace_span!("vision.cuda.memcpy", direction = "dtoh", bytes = len)
+            info_span!("vision.cuda.memcpy", direction = "dtoh", bytes = len)
                 .in_scope(|| self.stream.memcpy_dtoh(buf, host.as_mut_slice()))?;
-            trace_span!("vision.cuda.stream_sync", op = "download")
+            info_span!("vision.cuda.stream_sync", op = "download")
                 .in_scope(|| self.stream.synchronize())?;
             Ok(host)
         } else {

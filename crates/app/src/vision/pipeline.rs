@@ -17,7 +17,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::TrySendError;
 use ml_core::tch::{Cuda, Device};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::vision::{
     SourceKind, VisionConfig,
@@ -318,15 +318,18 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         }
     }
     for message in init_messages {
-        info!("{message}");
+        debug!("{message}");
+        println!("{message}");
     }
 
     let preview_server = spawn_preview_server(shared.clone(), history.clone())
         .context("Failed to start preview server")?;
 
-    info!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
+    debug!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
+    println!("HTTP preview available at http://127.0.0.1:8080/frame.jpg and /stream.mjpg");
     if config.verbose {
-        info!("Running vision pipeline — press Ctrl+C to stop");
+        debug!("Running vision pipeline — press Ctrl+C to stop");
+        println!("Running vision pipeline — press Ctrl+C to stop");
     }
 
     let mut frame_number: u64 = 0;
@@ -413,7 +416,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                             metrics::counter!("vision_capture_dropped_frames_total").increment(1);
                             metrics::gauge!("vision_queue_depth", "queue" => "processing")
                                 .set(work_tx.len() as f64);
-                            tracing::trace_span!(
+                            tracing::info_span!(
                                 "frame.drop",
                                 frame = frame_number,
                                 queue_depth = work_tx.len(),
@@ -456,7 +459,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         }
     }
 
-    info!("Stopping vision pipeline");
+    debug!("Stopping vision pipeline");
+    println!("Stopping vision pipeline");
 
     pipeline_running.store(false, Ordering::SeqCst);
     drop(work_tx);
