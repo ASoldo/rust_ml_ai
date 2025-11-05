@@ -4,7 +4,7 @@
 //! Actix runtime concerns. It surfaces live frames, a small history buffer, and
 //! SSE streams for downstream consumers.
 
-use std::time::Duration;
+use std::{cell::RefCell, time::Duration};
 
 use actix_web::{
     App, HttpResponse, HttpServer,
@@ -23,6 +23,32 @@ use crate::vision::{
     data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
     telemetry,
 };
+
+thread_local! {
+    static WORKER_SPAN_GUARD: RefCell<Option<tracing::span::EnteredSpan>> = const { RefCell::new(None) };
+}
+
+fn ensure_worker_span() {
+    WORKER_SPAN_GUARD.with(|cell| {
+        if cell.borrow().is_none() {
+            let thread_name = std::thread::current()
+                .name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "actix-server worker ???".to_string());
+            let worker_id = thread_name
+                .rsplit_once(' ')
+                .and_then(|(_, idx)| idx.parse::<usize>().ok())
+                .unwrap_or(0);
+            let guard = tracing::info_span!(
+                "vision.server.worker",
+                thread = %thread_name,
+                worker = worker_id
+            )
+            .entered();
+            cell.borrow_mut().replace(guard);
+        }
+    });
+}
 
 /// Shared state backing HTTP handlers.
 pub(crate) struct ServerState {
@@ -67,8 +93,10 @@ pub(crate) fn spawn_preview_server(
 
         let server_future = async move {
             let server = HttpServer::new(move || {
+                ensure_worker_span();
                 App::new()
                     .wrap_fn(|req, srv| {
+                        ensure_worker_span();
                         let method = req.method().clone();
                         let path = req.path().to_owned();
                         let span = tracing::info_span!(
