@@ -181,7 +181,8 @@ fn build_chrome_layer(
     let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
         .writer(file)
         .include_args(true)
-        .trace_style(tracing_chrome::TraceStyle::Threaded)
+        // Use async style so spans emitted across threads keep balanced begin/end events.
+        .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
     Ok((layer, guard))
 }

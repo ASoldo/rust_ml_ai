@@ -16,3 +16,6 @@ authors = ["Andrej Soldo soldo.andrej@gmail.com"]
 
 [workspace.metadata]
 description = "Playground workspace for CUDA kernels and ML experiments"
+
+[patch.crates-io]
+tracing-chrome = { path = "vendor/tracing-chrome" }
