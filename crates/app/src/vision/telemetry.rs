@@ -4,7 +4,7 @@ use std::{io, panic, path::Path, sync::OnceLock, thread, time::Duration};
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tracing_subscriber::{
-    filter::{EnvFilter, filter_fn},
+    filter::{Directive, EnvFilter, filter_fn},
     fmt,
     layer::SubscriberExt,
     prelude::*,
@@ -51,7 +51,16 @@ pub(crate) fn prometheus_handle() -> Option<&'static PrometheusHandle> {
 
 /// Install tracing subscribers required for the runtime based on telemetry options.
 pub(crate) fn enter_runtime(opts: &TelemetryOptions) -> TelemetryGuard {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let mut env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if opts.chrome_trace_path.is_some() {
+        if let Ok(directive) = "vision::vision=trace".parse::<Directive>() {
+            env_filter = env_filter.add_directive(directive);
+        }
+        if let Ok(directive) = "gpu_kernels=trace".parse::<Directive>() {
+            env_filter = env_filter.add_directive(directive);
+        }
+    }
 
     let console_layer = if opts.enable_tokio_console {
         match panic::catch_unwind(|| {
