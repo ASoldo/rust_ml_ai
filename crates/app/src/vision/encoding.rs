@@ -16,7 +16,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use crossbeam_channel::Receiver;
 use gpu_kernels::VisionRuntime;
-use tracing::error;
+use tracing::{Span, error};
 
 use crate::vision::{
     data::{DetectionSummary, FRAME_HISTORY_CAPACITY, FrameHistory, FramePacket, SharedFrame},
@@ -40,8 +40,8 @@ pub(crate) struct GpuEncodeJob {
 /// `FramePacket` while GPU jobs carry the metadata required to finalise the
 /// annotated frame via NVJPEG.
 pub(crate) enum EncodeJob {
-    Cpu(FramePacket),
-    Gpu(GpuEncodeJob),
+    Cpu { packet: FramePacket, span: Span },
+    Gpu { job: GpuEncodeJob, span: Span },
 }
 
 /// Spawn the dedicated encoder thread.
@@ -56,7 +56,8 @@ pub(crate) fn spawn_encode_worker(
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     telemetry::spawn_thread("vision-encoding", move || {
-        let worker_span = tracing::info_span!("encoding.worker");
+        let worker_span =
+            tracing::info_span!("encoding.worker", codec = "nvjpeg", queue = "encoding");
         let _worker_guard = worker_span.enter();
         let depth_probe = encode_rx.clone();
         for job in encode_rx {
@@ -69,18 +70,20 @@ pub(crate) fn spawn_encode_worker(
             let encode_start = Instant::now();
             let path_label: &'static str;
             let packet_result = match job {
-                EncodeJob::Cpu(packet) => {
+                EncodeJob::Cpu { packet, span } => {
                     path_label = "cpu";
-                    Ok(packet)
+                    Ok((packet, span))
                 }
-                EncodeJob::Gpu(task) => {
+                EncodeJob::Gpu { job, span } => {
                     path_label = "gpu";
-                    encode_gpu_frame(task)
+                    span.in_scope(|| encode_gpu_frame(job))
+                        .map(|packet| (packet, span))
                 }
             };
 
             match packet_result {
-                Ok(packet) => {
+                Ok((packet, span)) => {
+                    let _frame_guard = span.enter();
                     let job_span = tracing::info_span!(
                         "encoding.job",
                         path = path_label,

@@ -23,7 +23,7 @@ use ml_core::{
     detector::Detector,
     tch::{Cuda, Device, Tensor},
 };
-use tracing::{debug, error};
+use tracing::{Span, debug, error};
 use video_ingest::{Frame, FrameFormat};
 
 use crate::vision::{
@@ -40,6 +40,7 @@ pub(crate) struct FrameTask {
     pub(crate) frame_number: u64,
     pub(crate) fps: f32,
     pub(crate) enqueued_at: Instant,
+    pub(crate) span: Span,
 }
 
 #[derive(Clone)]
@@ -75,7 +76,12 @@ pub(crate) fn spawn_processing_worker(
     worker_index: usize,
 ) -> thread::JoinHandle<()> {
     telemetry::spawn_thread(format!("vision-processing-{worker_index}"), move || {
-        let worker_span = tracing::info_span!("processing.worker", worker = worker_index);
+        let worker_span = tracing::info_span!(
+            "processing.worker",
+            worker = worker_index,
+            batch = batch_size,
+            device = tracing::field::Empty
+        );
         let _worker_guard = worker_span.enter();
 
         let detector = match Detector::new(
@@ -99,6 +105,11 @@ pub(crate) fn spawn_processing_worker(
             }
         };
         drop(init_tx);
+
+        worker_span.record(
+            "device",
+            &tracing::field::display(format_args!("{:?}", detector.device())),
+        );
 
         let vision_runtime = detector.vision_runtime();
         let max_batch = batch_size.max(1);
@@ -142,9 +153,16 @@ pub(crate) fn spawn_processing_worker(
                 Ok(jobs) => {
                     for job in jobs {
                         health.beat(HealthComponent::Processor);
-                        let send_result =
-                            tracing::info_span!("processing.encode_send", worker = worker_index)
-                                .in_scope(|| encode_tx.send(job));
+                        let frame_id = match &job {
+                            EncodeJob::Cpu { packet, .. } => packet.frame_number,
+                            EncodeJob::Gpu { job, .. } => job.frame_number,
+                        };
+                        let send_result = tracing::info_span!(
+                            "processing.encode_send",
+                            worker = worker_index,
+                            frame = frame_id
+                        )
+                        .in_scope(|| encode_tx.send(job));
                         if send_result.is_err() {
                             error!("Encode channel closed, stopping processing worker");
                             running.store(false, Ordering::SeqCst);
@@ -252,6 +270,7 @@ pub(crate) fn process_frame_batch(
     let mut jobs = Vec::with_capacity(tasks.len());
     let annotation_start = Instant::now();
     for (task, detections) in tasks.drain(..).zip(detection_batches.into_iter()) {
+        let flow_guard = task.span.enter();
         let frame_span = tracing::info_span!(
             "processing.frame",
             worker = worker_index,
@@ -272,7 +291,9 @@ pub(crate) fn process_frame_batch(
             verbose,
             jpeg_quality,
             vision.clone(),
+            task.span.clone(),
         )?);
+        drop(flow_guard);
     }
 
     metrics::histogram!("vision_processing_annotation_seconds")
@@ -294,6 +315,7 @@ fn finalize_frame(
     verbose: bool,
     jpeg_quality: i32,
     vision: Option<Arc<Mutex<VisionRuntime>>>,
+    trace_span: Span,
 ) -> Result<EncodeJob> {
     let frame = &task.frame;
     let path_label = if vision.is_some() { "gpu" } else { "cpu" };
@@ -383,7 +405,7 @@ fn finalize_frame(
                 )
             })
             .collect();
-        tracing::info_span!(
+        let gpu_job = tracing::info_span!(
             "processing.annotate",
             path = "gpu",
             frame = task.frame_number
@@ -400,18 +422,27 @@ fn finalize_frame(
                 &labels,
                 jpeg_quality,
             )
-            .map(EncodeJob::Gpu)
-        })?
+            .map(|job| EncodeJob::Gpu {
+                job,
+                span: trace_span.clone(),
+            })
+        })?;
+        gpu_job
     } else {
-        tracing::info_span!(
+        let cpu_packet = tracing::info_span!(
             "processing.annotate",
             path = "cpu",
             frame = task.frame_number
         )
         .in_scope(|| {
-            annotate_frame_cpu(frame, task.frame_number, task.fps, summaries, jpeg_quality)
-                .map(EncodeJob::Cpu)
-        })?
+            annotate_frame_cpu(frame, task.frame_number, task.fps, summaries, jpeg_quality).map(
+                |packet| EncodeJob::Cpu {
+                    packet,
+                    span: trace_span.clone(),
+                },
+            )
+        })?;
+        cpu_packet
     };
 
     metrics::histogram!("vision_processing_finalize_seconds", "path" => path_label)

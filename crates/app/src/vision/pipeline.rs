@@ -98,7 +98,9 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         workers = config.processor_workers,
         batch_size = config.batch_size,
         use_cpu = config.use_cpu,
-        nvdec = config.use_nvdec
+        nvdec = config.use_nvdec,
+        gpu = tracing::field::Empty,
+        codec = "mjpeg"
     );
     let _pipeline_span_guard = pipeline_span.enter();
 
@@ -111,6 +113,10 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     } else {
         Device::cuda_if_available()
     };
+    pipeline_span.record(
+        "gpu",
+        &tracing::field::display(format_args!("{:?}", device)),
+    );
 
     let cuda_available = Cuda::is_available();
     let cuda_devices = Cuda::device_count();
@@ -346,6 +352,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         height = frame.height,
                         timestamp = frame.timestamp_ms
                     );
+                    let task_span = frame_span.clone();
                     let _frame_guard = frame_span.enter();
                     health.beat(HealthComponent::Capture);
                     frame_number = frame_number.wrapping_add(1);
@@ -387,6 +394,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         frame_number,
                         fps: smoothed_fps,
                         enqueued_at: Instant::now(),
+                        span: task_span,
                     };
                     let _dispatch_guard = tracing::info_span!(
                         "capture.dispatch",
@@ -405,6 +413,13 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                             metrics::counter!("vision_capture_dropped_frames_total").increment(1);
                             metrics::gauge!("vision_queue_depth", "queue" => "processing")
                                 .set(work_tx.len() as f64);
+                            tracing::trace_span!(
+                                "frame.drop",
+                                frame = frame_number,
+                                queue_depth = work_tx.len(),
+                                dropped_total = dropped_frames
+                            )
+                            .in_scope(|| {});
                             if config.verbose {
                                 warn!(
                                     "Dropping frame #{frame_number} (processing backlog, dropped total: {})",
