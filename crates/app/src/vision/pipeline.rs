@@ -5,7 +5,7 @@
 //! watchdog state in sync, and handling restarts when components stall.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex, Once,
         atomic::{AtomicBool, Ordering},
@@ -15,9 +15,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use crossbeam_channel::TrySendError;
+use crossbeam_channel::{Receiver, TrySendError};
 use ml_core::tch::{Cuda, Device};
-use tracing::{debug, error, warn};
+use tracing::{Span, debug, error, warn};
 
 use crate::vision::{
     SourceKind, VisionConfig,
@@ -237,6 +237,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     let encoding_queue = std::cmp::max(3, config.processor_workers.saturating_mul(2));
     let (work_tx, work_rx) = crossbeam_channel::bounded::<FrameTask>(processing_queue);
     let (encode_tx, encode_rx) = crossbeam_channel::bounded::<EncodeJob>(encoding_queue);
+    let (frame_done_tx, frame_done_rx) = crossbeam_channel::unbounded::<u64>();
+    let mut inflight_spans = HashMap::new();
 
     let detector_init = DetectorInit {
         model_path: config.model_path.clone(),
@@ -262,6 +264,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         shared.clone(),
         history.clone(),
         encode_rx,
+        frame_done_tx,
         health.clone(),
         pipeline_running.clone(),
     );
@@ -339,6 +342,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     let mut restart_reason: Option<&'static str> = None;
 
     while pipeline_running.load(Ordering::Relaxed) {
+        drain_completed_frame_spans(&frame_done_rx, &mut inflight_spans);
         if shutdown.load(Ordering::Relaxed) {
             pipeline_running.store(false, Ordering::SeqCst);
             break;
@@ -348,9 +352,10 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         match frame_result {
             Ok(frame) => match frame {
                 Ok(frame) => {
+                    let next_frame_number = frame_number.wrapping_add(1);
                     let frame_span = tracing::info_span!(
                         "frame",
-                        frame = frame_number.wrapping_add(1),
+                        frame = next_frame_number,
                         width = frame.width,
                         height = frame.height,
                         timestamp = frame.timestamp_ms
@@ -358,7 +363,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                     let task_span = frame_span.clone();
                     let _frame_guard = frame_span.enter();
                     health.beat(HealthComponent::Capture);
-                    frame_number = frame_number.wrapping_add(1);
+                    frame_number = next_frame_number;
 
                     let capture_stage_start = Instant::now();
 
@@ -408,6 +413,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
 
                     match work_tx.try_send(task) {
                         Ok(()) => {
+                            inflight_spans.insert(frame_number, frame_span.clone());
                             metrics::gauge!("vision_queue_depth", "queue" => "processing")
                                 .set(work_tx.len() as f64);
                         }
@@ -459,6 +465,9 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         }
     }
 
+    drain_completed_frame_spans(&frame_done_rx, &mut inflight_spans);
+    inflight_spans.clear();
+
     debug!("Stopping vision pipeline");
     println!("Stopping vision pipeline");
 
@@ -489,4 +498,15 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     }
 
     Ok(PipelineOutcome::Graceful)
+}
+
+fn drain_completed_frame_spans(rx: &Receiver<u64>, inflight: &mut HashMap<u64, Span>) {
+    while let Ok(frame_number) = rx.try_recv() {
+        if inflight.remove(&frame_number).is_none() {
+            tracing::debug!(
+                frame = frame_number,
+                "received frame completion without in-flight span"
+            );
+        }
+    }
 }

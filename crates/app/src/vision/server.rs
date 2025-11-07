@@ -6,18 +6,18 @@
 
 use std::{cell::RefCell, time::Duration};
 
+use actix_web::dev::Service;
 use actix_web::{
     App, HttpResponse, HttpServer,
     http::header,
     web::{self, Bytes},
 };
-use actix_web::dev::Service;
 use anyhow::{Context, Result};
 use async_stream::stream;
 use serde::Deserialize;
 use serde_json::to_string;
 use tokio::sync::oneshot;
-use tracing::{error, info_span, Instrument};
+use tracing::{Instrument, error, info_span};
 
 use crate::vision::{
     data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
@@ -109,7 +109,10 @@ pub(crate) fn spawn_preview_server(
                         async move {
                             let res = fut.instrument(span.clone()).await;
                             if let Ok(ref response) = res {
-                                span.record("status", &tracing::field::display(response.status().as_u16()));
+                                span.record(
+                                    "status",
+                                    &tracing::field::display(response.status().as_u16()),
+                                );
                             }
                             res
                         }
@@ -141,7 +144,10 @@ pub(crate) fn spawn_preview_server(
 
             server.await
         }
-        .instrument(info_span!("vision.server.actix", workers = ACTIX_WORKERS as u64));
+        .instrument(info_span!(
+            "vision.server.actix",
+            workers = ACTIX_WORKERS as u64
+        ));
 
         if let Err(err) = actix_web::rt::System::new().block_on(server_future) {
             error!("HTTP server error: {err}");

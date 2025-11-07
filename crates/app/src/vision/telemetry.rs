@@ -244,7 +244,9 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
             }
             "e" => {
                 if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
-                    if let Some(pos) = stack.iter().rposition(|(stored_id, _)| *stored_id == old_id)
+                    if let Some(pos) = stack
+                        .iter()
+                        .rposition(|(stored_id, _)| *stored_id == old_id)
                     {
                         let (_, new_id) = stack.remove(pos);
                         entry["id"] = new_id.into();

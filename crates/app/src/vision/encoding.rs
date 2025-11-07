@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use gpu_kernels::VisionRuntime;
 use tracing::{Span, error};
 
@@ -52,6 +52,7 @@ pub(crate) fn spawn_encode_worker(
     shared: SharedFrame,
     history: FrameHistory,
     encode_rx: Receiver<EncodeJob>,
+    frame_done_tx: Sender<u64>,
     health: Arc<PipelineHealth>,
     running: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
@@ -68,21 +69,17 @@ pub(crate) fn spawn_encode_worker(
                 .set(depth_probe.len() as f64);
 
             let encode_start = Instant::now();
-            let path_label: &'static str;
-            let packet_result = match job {
-                EncodeJob::Cpu { packet, span } => {
-                    path_label = "cpu";
-                    Ok((packet, span))
-                }
+            let (path_label, frame_number, span, packet_result) = match job {
+                EncodeJob::Cpu { packet, span } => ("cpu", packet.frame_number, span, Ok(packet)),
                 EncodeJob::Gpu { job, span } => {
-                    path_label = "gpu";
-                    span.in_scope(|| encode_gpu_frame(job))
-                        .map(|packet| (packet, span))
+                    let number = job.frame_number;
+                    let result = span.in_scope(|| encode_gpu_frame(job));
+                    ("gpu", number, span, result)
                 }
             };
 
             match packet_result {
-                Ok((packet, span)) => {
+                Ok(packet) => {
                     let _frame_guard = span.enter();
                     let job_span = tracing::info_span!(
                         "encoding.job",
@@ -115,6 +112,7 @@ pub(crate) fn spawn_encode_worker(
                     if path_label == "gpu" {
                         metrics::histogram!("vision_gpu_encode_seconds").record(elapsed);
                     }
+                    let _ = frame_done_tx.send(frame_number);
                 }
                 Err(err) => {
                     error!("Encode stage error: {err}");
@@ -125,6 +123,7 @@ pub(crate) fn spawn_encode_worker(
                         .record(elapsed);
                     metrics::histogram!("vision_encoding_seconds", "path" => path_label)
                         .record(elapsed);
+                    let _ = frame_done_tx.send(frame_number);
                     running.store(false, Ordering::SeqCst);
                     break;
                 }
