@@ -14,6 +14,7 @@ use actix_web::{
 };
 use anyhow::{Context, Result};
 use async_stream::stream;
+use num_cpus;
 use serde::Deserialize;
 use serde_json::to_string;
 use tokio::sync::oneshot;
@@ -89,7 +90,7 @@ pub(crate) fn spawn_preview_server(
     let server_history = history.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let handle = telemetry::spawn_thread("vision-preview-server", move || {
-        const ACTIX_WORKERS: usize = 16;
+        let actix_workers = num_cpus::get().max(1);
 
         let server_future = async move {
             let server = HttpServer::new(move || {
@@ -132,7 +133,7 @@ pub(crate) fn spawn_preview_server(
                     )
                     .route("/metrics", web::get().to(metrics_handler))
             })
-            .workers(ACTIX_WORKERS)
+            .workers(actix_workers)
             .bind(("0.0.0.0", 8080))?
             .run();
 
@@ -146,7 +147,7 @@ pub(crate) fn spawn_preview_server(
         }
         .instrument(info_span!(
             "vision.server.actix",
-            workers = ACTIX_WORKERS as u64
+            workers = actix_workers as u64
         ));
 
         if let Err(err) = actix_web::rt::System::new().block_on(server_future) {
