@@ -212,6 +212,14 @@ impl Drop for TelemetryGuard {
     }
 }
 
+/// Post-process Chrome traces emitted in async mode so Perfetto renders them correctly.
+///
+/// The tracing `ChromeLayer` uses async slices when `TraceStyle::Async` is selected. That results
+/// in two follow-up tasks before handing the trace to Perfetto:
+///   1. Reassign async IDs so that nested spans in the same logical scope can be disambiguated.
+///   2. Coerce same-thread `b/e` pairs back into synchronous `B/E` durations while leaving genuine
+///      cross-thread spans encoded as async slices. This prevents Perfetto's `misplaced_end_event`
+///      warnings while keeping true async flows intact.
 fn fix_async_ids(path: &Path) -> io::Result<()> {
     if !path.is_file() {
         return Ok(());
