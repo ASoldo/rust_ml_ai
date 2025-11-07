@@ -50,11 +50,15 @@ mnist-predict image_path model_path=MNIST_MODEL_PATH device='':
 
 # vision
 vision *flags:
+    LIBTORCH=/opt/libtorch \
+    LD_LIBRARY_PATH=/opt/libtorch/lib:/opt/cuda/lib64:$LD_LIBRARY_PATH \
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
     vision {{VISION_CAMERA}} {{VISION_MODEL_PATH}} {{VISION_WIDTH}} {{VISION_HEIGHT}} \
     --processors {{VISION_PROCESSORS}} --batch-size {{VISION_BATCH_SIZE}} {{flags}}
 
 vision-batch *flags:
+    LIBTORCH=/opt/libtorch \
+    LD_LIBRARY_PATH=/opt/libtorch/lib:/opt/cuda/lib64:$LD_LIBRARY_PATH \
     {{CARGO}} run --release -p {{BIN}} --features {{WITH_TCH_FEATURE}} -- \
     vision {{VISION_CAMERA}} {{VISION_MODEL_PATH}} {{VISION_WIDTH}} {{VISION_HEIGHT}} \
     --processors 4 --batch-size 2 {{flags}}
@@ -75,6 +79,8 @@ vision-udp:
     --verbose
 
 vision-ptz:
+    LIBTORCH=/opt/libtorch \
+    LD_LIBRARY_PATH=/opt/libtorch/lib:/opt/cuda/lib64:$LD_LIBRARY_PATH \
     cargo run --release -p vision --features with-tch -- \
     vision --source "udp://127.0.0.1:5000?sprop=Z/QAFpGWgKA9sBagIMDIAAADAAgAAAMA9HixdQ==,aO8xkhk=&payload=96" \
     --model models/yolov12n-face.torchscript \
