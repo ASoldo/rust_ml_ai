@@ -1,6 +1,7 @@
 //! Telemetry helpers for tracing spans, Prometheus metrics, and optional console tooling.
 
 use std::{
+    collections::HashMap,
     io::{self, Write},
     panic,
     path::{Path, PathBuf},
@@ -190,7 +191,6 @@ fn build_chrome_layer(
     let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
         .writer(file)
         .include_args(true)
-        // Use async style so spans emitted across threads keep balanced begin/end events.
         .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
     Ok((layer, guard))
@@ -226,7 +226,7 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
     };
 
     let mut next_id: u64 = 1;
-    let mut stack: Vec<(u64, u64)> = Vec::new();
+    let mut id_map: HashMap<u64, Vec<u64>> = HashMap::new();
 
     for entry in events.iter_mut() {
         let Some(phase) = entry.get("ph").and_then(|v| v.as_str()) else {
@@ -239,22 +239,20 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
                     let new_id = next_id;
                     next_id = next_id.saturating_add(1);
                     entry["id"] = new_id.into();
-                    stack.push((old_id, new_id));
+                    id_map.entry(old_id).or_default().push(new_id);
                 }
             }
             "e" => {
                 if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
-                    if let Some(pos) = stack
-                        .iter()
-                        .rposition(|(stored_id, _)| *stored_id == old_id)
-                    {
-                        let (_, new_id) = stack.remove(pos);
-                        entry["id"] = new_id.into();
-                    } else {
-                        let new_id = next_id;
-                        next_id = next_id.saturating_add(1);
-                        entry["id"] = new_id.into();
-                    }
+                    let new_id = id_map
+                        .get_mut(&old_id)
+                        .and_then(|stack| stack.pop())
+                        .unwrap_or_else(|| {
+                            let fallback = next_id;
+                            next_id = next_id.saturating_add(1);
+                            fallback
+                        });
+                    entry["id"] = new_id.into();
                 }
             }
             _ => {}
