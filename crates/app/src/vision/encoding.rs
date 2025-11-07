@@ -59,29 +59,50 @@ pub(crate) fn spawn_encode_worker(
     telemetry::spawn_thread("vision-encoding", move || {
         let worker_span =
             tracing::info_span!("encoding.worker", codec = "nvjpeg", queue = "encoding");
-        let _worker_guard = worker_span.enter();
-        let depth_probe = encode_rx.clone();
+        let depth_probe = {
+            let _worker_guard = worker_span.enter();
+            encode_rx.clone()
+        };
         for job in encode_rx {
             if !running.load(Ordering::Relaxed) {
                 break;
             }
+            let queue_depth = depth_probe.len();
             metrics::gauge!("vision_queue_depth", "queue" => "encoding")
-                .set(depth_probe.len() as f64);
+                .set(queue_depth as f64);
+            let iteration_span = tracing::info_span!(
+                "encoding.worker.iteration",
+                queue_depth = queue_depth as i64,
+                frame = tracing::field::Empty,
+                path = tracing::field::Empty
+            );
+            let _iteration_guard = iteration_span.enter();
 
             let encode_start = Instant::now();
-            let (path_label, frame_number, span, packet_result) = match job {
-                EncodeJob::Cpu { packet, span } => ("cpu", packet.frame_number, span, Ok(packet)),
+            let (path_label, frame_number, packet_result, span) = match job {
+                EncodeJob::Cpu { packet, span } => ("cpu", packet.frame_number, Ok(packet), span),
                 EncodeJob::Gpu { job, span } => {
                     let number = job.frame_number;
-                    let result = span.in_scope(|| encode_gpu_frame(job));
-                    ("gpu", number, span, result)
+                    let parent_span = span.clone();
+                    let result = tracing::info_span!(
+                        parent: &parent_span,
+                        "encoding.gpu_frame",
+                        frame = number
+                    )
+                    .in_scope(|| encode_gpu_frame(job));
+                    ("gpu", number, result, span)
                 }
             };
+            iteration_span.record(
+                "frame",
+                &tracing::field::display(frame_number),
+            );
+            iteration_span.record("path", &tracing::field::display(path_label));
 
             match packet_result {
                 Ok(packet) => {
-                    let _frame_guard = span.enter();
                     let job_span = tracing::info_span!(
+                        parent: &span,
                         "encoding.job",
                         path = path_label,
                         frame = packet.frame_number,

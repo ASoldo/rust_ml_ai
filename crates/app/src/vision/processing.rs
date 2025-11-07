@@ -82,26 +82,27 @@ pub(crate) fn spawn_processing_worker(
             batch = batch_size,
             device = tracing::field::Empty
         );
-        let _worker_guard = worker_span.enter();
-
-        let detector = match Detector::new(
-            &detector_init.model_path,
-            detector_init.device,
-            detector_init.input_size,
-        ) {
-            Ok(det) => match init_tx.send(Ok(format!(
-                "worker #{worker_index}: detector loaded on {:?} (vision runtime enabled: {})",
-                det.device(),
-                det.uses_gpu_runtime()
-            ))) {
-                Ok(_) => det,
-                Err(_) => return,
-            },
-            Err(err) => {
-                let _ = init_tx.send(Err(format!(
-                    "worker #{worker_index}: failed to load detector: {err}"
-                )));
-                return;
+        let detector = {
+            let _worker_guard = worker_span.enter();
+            match Detector::new(
+                &detector_init.model_path,
+                detector_init.device,
+                detector_init.input_size,
+            ) {
+                Ok(det) => match init_tx.send(Ok(format!(
+                    "worker #{worker_index}: detector loaded on {:?} (vision runtime enabled: {})",
+                    det.device(),
+                    det.uses_gpu_runtime()
+                ))) {
+                    Ok(_) => det,
+                    Err(_) => return,
+                },
+                Err(err) => {
+                    let _ = init_tx.send(Err(format!(
+                        "worker #{worker_index}: failed to load detector: {err}"
+                    )));
+                    return;
+                }
             }
         };
         drop(init_tx);
@@ -119,10 +120,22 @@ pub(crate) fn spawn_processing_worker(
                 break;
             }
 
+            let iteration_span = tracing::info_span!(
+                "processing.worker.iteration",
+                worker = worker_index,
+                queue_depth = tracing::field::Empty,
+                frames = tracing::field::Empty
+            );
+            let _iteration_guard = iteration_span.enter();
+
             let first_task = match work_rx.recv() {
                 Ok(task) => {
                     metrics::gauge!("vision_queue_depth", "queue" => "processing")
                         .set(work_rx.len() as f64);
+                    iteration_span.record(
+                        "queue_depth",
+                        &tracing::field::display(work_rx.len()),
+                    );
                     task
                 }
                 Err(_) => break,
@@ -140,6 +153,10 @@ pub(crate) fn spawn_processing_worker(
                     }
                 }
             }
+            iteration_span.record(
+                "frames",
+                &tracing::field::display(batch.len()),
+            );
 
             match process_frame_batch(
                 &detector,
@@ -270,8 +287,9 @@ pub(crate) fn process_frame_batch(
     let mut jobs = Vec::with_capacity(tasks.len());
     let annotation_start = Instant::now();
     for (task, detections) in tasks.drain(..).zip(detection_batches.into_iter()) {
-        let flow_guard = task.span.enter();
+        let frame_parent = task.span.clone();
         let frame_span = tracing::info_span!(
+            parent: &frame_parent,
             "processing.frame",
             worker = worker_index,
             frame = task.frame_number,
@@ -291,9 +309,8 @@ pub(crate) fn process_frame_batch(
             verbose,
             jpeg_quality,
             vision.clone(),
-            task.span.clone(),
+            frame_parent.clone(),
         )?);
-        drop(flow_guard);
     }
 
     metrics::histogram!("vision_processing_annotation_seconds")
@@ -319,7 +336,9 @@ fn finalize_frame(
 ) -> Result<EncodeJob> {
     let frame = &task.frame;
     let path_label = if vision.is_some() { "gpu" } else { "cpu" };
+    let parent_span = trace_span.clone();
     let finalize_span = tracing::info_span!(
+        parent: &parent_span,
         "processing.finalize",
         frame = task.frame_number,
         path = path_label

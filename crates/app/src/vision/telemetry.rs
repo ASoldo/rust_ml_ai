@@ -226,33 +226,76 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
     };
 
     let mut next_id: u64 = 1;
-    let mut id_map: HashMap<u64, Vec<u64>> = HashMap::new();
+    #[derive(Clone, Copy)]
+    struct BeginInfo {
+        new_id: u64,
+        idx: usize,
+        tid: u64,
+    }
+    let mut id_map: HashMap<u64, Vec<BeginInfo>> = HashMap::new();
 
-    for entry in events.iter_mut() {
-        let Some(phase) = entry.get("ph").and_then(|v| v.as_str()) else {
+    fn to_sync(entry: &mut serde_json::Value, phase: &str) {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("ph".into(), phase.into());
+            obj.remove("id");
+        }
+    }
+
+    fn ensure_async(entry: &mut serde_json::Value, phase: &str) {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("ph".into(), phase.into());
+        }
+    }
+
+    for idx in 0..events.len() {
+        let Some(phase) = events[idx].get("ph").and_then(|v| v.as_str()) else {
             continue;
         };
 
         match phase {
             "b" => {
-                if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
-                    let new_id = next_id;
-                    next_id = next_id.saturating_add(1);
-                    entry["id"] = new_id.into();
-                    id_map.entry(old_id).or_default().push(new_id);
-                }
+                let entry = &mut events[idx];
+                let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+                let tid = entry.get("tid").and_then(|v| v.as_u64()).unwrap_or(0);
+                let new_id = next_id;
+                next_id = next_id.saturating_add(1);
+                entry["id"] = new_id.into();
+                id_map.entry(old_id).or_default().push(BeginInfo {
+                    new_id,
+                    idx,
+                    tid,
+                });
             }
             "e" => {
-                if let Some(old_id) = entry.get("id").and_then(|v| v.as_u64()) {
-                    let new_id = id_map
-                        .get_mut(&old_id)
-                        .and_then(|stack| stack.pop())
-                        .unwrap_or_else(|| {
-                            let fallback = next_id;
-                            next_id = next_id.saturating_add(1);
-                            fallback
-                        });
-                    entry["id"] = new_id.into();
+                let Some(old_id) = events[idx].get("id").and_then(|v| v.as_u64()) else {
+                    continue;
+                };
+                let end_tid = events[idx].get("tid").and_then(|v| v.as_u64()).unwrap_or(0);
+                let info = id_map
+                    .get_mut(&old_id)
+                    .and_then(|stack| stack.pop())
+                    .unwrap_or_else(|| {
+                        let fallback_id = next_id;
+                        next_id = next_id.saturating_add(1);
+                        BeginInfo {
+                            new_id: fallback_id,
+                            idx,
+                            tid: end_tid,
+                        }
+                    });
+                let (begin_slice, end_slice) = events.split_at_mut(idx);
+                let begin_entry = &mut begin_slice[info.idx];
+                let end_entry = &mut end_slice[0];
+                end_entry["id"] = info.new_id.into();
+                let start_tid = info.tid;
+                if start_tid == end_tid {
+                    to_sync(begin_entry, "B");
+                    to_sync(end_entry, "E");
+                } else {
+                    ensure_async(begin_entry, "b");
+                    ensure_async(end_entry, "e");
                 }
             }
             _ => {}

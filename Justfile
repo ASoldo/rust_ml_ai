@@ -9,8 +9,8 @@ VISION_MODEL_PATH := "models/yolov12n-face.torchscript"
 VISION_CAMERA := "/dev/video0"
 VISION_WIDTH := "640"
 VISION_HEIGHT := "640"
-VISION_PROCESSORS := "2"
-VISION_BATCH_SIZE := "2"
+VISION_PROCESSORS := "1"
+VISION_BATCH_SIZE := "1"
 
 default:
     @just --list
