@@ -16,6 +16,14 @@ use crate::{
     types::{CaptureError, Frame, FrameFormat},
 };
 
+struct FfmpegSpanFields {
+    uri: String,
+    width: i32,
+    height: i32,
+    transport: String,
+    decoder: String,
+}
+
 /// Spawns an FFmpeg process that uses NVDEC (via CUDA) to decode an H.264 stream and
 /// yields BGR8 frames via a background thread.
 pub fn spawn_nvdec_h264_reader(
@@ -61,7 +69,15 @@ pub fn spawn_nvdec_h264_reader(
         .arg("rawvideo")
         .arg("-");
 
-    spawn_ffmpeg_reader(cmd, target_size, 3, None)
+    let span_fields = FfmpegSpanFields {
+        uri: ffmpeg_uri.clone(),
+        width: target_size.0,
+        height: target_size.1,
+        transport: if is_v4l { "device".into() } else { "uri".into() },
+        decoder: "nvdec".into(),
+    };
+
+    spawn_ffmpeg_reader(cmd, target_size, 3, None, span_fields)
 }
 
 /// Spawn an RTSP reader, optionally leveraging NVDEC when requested.
@@ -103,7 +119,14 @@ pub fn spawn_rtsp_reader(
         .arg("rawvideo")
         .arg("-");
 
-    spawn_ffmpeg_reader(cmd, target_size, 4, None)
+    let span_fields = FfmpegSpanFields {
+        uri: uri.to_string(),
+        width: target_size.0,
+        height: target_size.1,
+        transport: "rtsp".into(),
+        decoder: if use_nvdec { "nvdec".into() } else { "software".into() },
+    };
+    spawn_ffmpeg_reader(cmd, target_size, 4, None, span_fields)
 }
 
 /// Spawn a UDP RTP reader, optionally leveraging NVDEC for decode.
@@ -145,7 +168,14 @@ pub fn spawn_udp_reader(
         .arg("-");
 
     let sdp = build_udp_sdp(uri).map_err(|err| anyhow!("{err}"))?;
-    spawn_ffmpeg_reader(cmd, target_size, 4, Some(sdp))
+    let span_fields = FfmpegSpanFields {
+        uri: uri.to_string(),
+        width: target_size.0,
+        height: target_size.1,
+        transport: "udp".into(),
+        decoder: if use_nvdec { "nvdec".into() } else { "software".into() },
+    };
+    spawn_ffmpeg_reader(cmd, target_size, 4, Some(sdp), span_fields)
 }
 
 /// Build the SDP payload consumed by FFmpeg when attaching to a UDP RTP stream.
@@ -223,6 +253,7 @@ fn spawn_ffmpeg_reader(
     target_size: (i32, i32),
     queue_size: usize,
     stdin_payload: Option<String>,
+    span_fields: FfmpegSpanFields,
 ) -> Result<Receiver<Result<Frame, CaptureError>>> {
     let (tx, rx) = bounded(queue_size);
     if stdin_payload.is_some() {
@@ -247,12 +278,24 @@ fn spawn_ffmpeg_reader(
         }
     }
 
-    thread::spawn(move || {
-        let tx_clone = tx.clone();
-        match ffmpeg_loop(stdout, child, target_size, tx_clone) {
-            Ok(()) => {}
-            Err(err) => {
-                let _ = tx.send(Err(err));
+    thread::spawn({
+        move || {
+            let span = tracing::info_span!(
+                "vision.video_ingest.ffmpeg",
+                uri = %span_fields.uri,
+                width = span_fields.width,
+                height = span_fields.height,
+                transport = %span_fields.transport,
+                decoder = %span_fields.decoder
+            );
+            let _guard = span.enter();
+            let tx_clone = tx.clone();
+            match ffmpeg_loop(stdout, child, target_size, tx_clone.clone()) {
+                Ok(()) => {}
+                Err(err) => {
+                    tracing::error!(error = ?err, "ffmpeg capture loop exited");
+                    let _ = tx_clone.send(Err(err));
+                }
             }
         }
     });

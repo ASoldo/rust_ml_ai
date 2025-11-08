@@ -25,7 +25,7 @@ static PROM_UPKEEP_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 
 /// Guard returned when a telemetry subscriber has been installed for the current thread.
 pub(crate) struct TelemetryGuard {
-    _default_guard: tracing::subscriber::DefaultGuard,
+    default_guard: Option<tracing::subscriber::DefaultGuard>,
     _chrome_guard: Option<tracing_chrome::FlushGuard>,
     chrome_trace_path: Option<PathBuf>,
 }
@@ -160,7 +160,7 @@ pub(crate) fn enter_runtime(opts: &TelemetryOptions) -> TelemetryGuard {
     };
 
     TelemetryGuard {
-        _default_guard: default_guard,
+        default_guard: Some(default_guard),
         _chrome_guard: chrome_guard,
         chrome_trace_path: opts.chrome_trace_path.clone(),
     }
@@ -191,7 +191,6 @@ fn build_chrome_layer(
     let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
         .writer(file)
         .include_args(true)
-        .trace_style(tracing_chrome::TraceStyle::Async)
         .build();
     Ok((layer, guard))
 }
@@ -208,6 +207,13 @@ impl Drop for TelemetryGuard {
             if let Err(err) = fix_async_ids(path) {
                 tracing::warn!("failed to normalise chrome trace {}: {err}", path.display());
             }
+        }
+
+        // Leaking the guard keeps the subscriber installed for the process lifetime,
+        // which avoids `tried to drop a ref to Id(_)` panics when background threads
+        // still hold spans during shutdown.
+        if let Some(guard) = self.default_guard.take() {
+            std::mem::forget(guard);
         }
     }
 }
@@ -241,6 +247,7 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
         tid: u64,
     }
     let mut id_map: HashMap<u64, Vec<BeginInfo>> = HashMap::new();
+    let mut orphan_end_events: Vec<usize> = Vec::new();
 
     fn to_sync(entry: &mut serde_json::Value, phase: &str) {
         if let Some(obj) = entry.as_object_mut() {
@@ -281,18 +288,14 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
                     continue;
                 };
                 let end_tid = events[idx].get("tid").and_then(|v| v.as_u64()).unwrap_or(0);
-                let info = id_map
-                    .get_mut(&old_id)
-                    .and_then(|stack| stack.pop())
-                    .unwrap_or_else(|| {
-                        let fallback_id = next_id;
-                        next_id = next_id.saturating_add(1);
-                        BeginInfo {
-                            new_id: fallback_id,
-                            idx,
-                            tid: end_tid,
-                        }
-                    });
+                let Some(stack) = id_map.get_mut(&old_id) else {
+                    orphan_end_events.push(idx);
+                    continue;
+                };
+                let Some(info) = stack.pop() else {
+                    orphan_end_events.push(idx);
+                    continue;
+                };
                 let (begin_slice, end_slice) = events.split_at_mut(idx);
                 let begin_entry = &mut begin_slice[info.idx];
                 let end_entry = &mut end_slice[0];
@@ -310,9 +313,42 @@ fn fix_async_ids(path: &Path) -> io::Result<()> {
         }
     }
 
+    if !orphan_end_events.is_empty() {
+        orphan_end_events.sort_unstable();
+        for idx in orphan_end_events.into_iter().rev() {
+            events.remove(idx);
+        }
+    }
+
+    let mut meta_events: Vec<serde_json::Value> = Vec::new();
+    let mut span_events: Vec<serde_json::Value> = Vec::new();
+    for ev in events.into_iter() {
+        match ev.get("ph").and_then(|v| v.as_str()) {
+            Some("M") => meta_events.push(ev),
+            _ => span_events.push(ev),
+        }
+    }
+    span_events.sort_by(|a, b| {
+        let ts_a = a.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ts_b = b.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        if ts_a == ts_b {
+            let order = |ph: &str| match ph {
+                "B" => 0,
+                "E" => 1,
+                _ => 2,
+            };
+            let pa = a.get("ph").and_then(|v| v.as_str()).map(order).unwrap_or(2);
+            let pb = b.get("ph").and_then(|v| v.as_str()).map(order).unwrap_or(2);
+            pa.cmp(&pb)
+        } else {
+            ts_a.partial_cmp(&ts_b).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+    meta_events.append(&mut span_events);
+
     let tmp_path = path.with_extension("json.tmp");
     let mut file = std::fs::File::create(&tmp_path)?;
-    serde_json::to_writer(&mut file, &events)?;
+    serde_json::to_writer(&mut file, &meta_events)?;
     file.write_all(b"\n")?;
     std::fs::rename(tmp_path, path)?;
     Ok(())

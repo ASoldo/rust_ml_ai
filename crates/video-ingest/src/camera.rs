@@ -25,9 +25,21 @@ pub fn spawn_camera_reader(
     let (tx, rx) = bounded(2);
     let uri = uri.to_string();
 
-    thread::spawn(move || {
-        if let Err(err) = capture_loop(&uri, target_size, tx.clone()) {
-            let _ = tx.send(Err(err));
+    thread::spawn({
+        let thread_uri = uri.clone();
+        let thread_tx = tx.clone();
+        move || {
+            let span = tracing::info_span!(
+                "vision.video_ingest.camera",
+                uri = %thread_uri,
+                width = target_size.0,
+                height = target_size.1
+            );
+            let _guard = span.enter();
+            if let Err(err) = capture_loop(&thread_uri, target_size, thread_tx.clone()) {
+                tracing::error!(error = ?err, "camera capture loop exited");
+                let _ = thread_tx.send(Err(err));
+            }
         }
     });
 

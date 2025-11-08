@@ -144,81 +144,113 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         config.processor_workers, config.batch_size
     );
 
-    let receiver = match config.source_kind {
-        SourceKind::Rtsp => {
-            match video_ingest::spawn_rtsp_reader(
-                &config.camera_uri,
-                (config.width, config.height),
-                config.use_nvdec,
-            ) {
-                Ok(rx) => rx,
-                Err(err) if config.use_nvdec => {
-                    warn!(
-                        "RTSP NVDEC setup failed ({}); falling back to software decode",
-                        err
-                    );
-                    video_ingest::spawn_rtsp_reader(
-                        &config.camera_uri,
-                        (config.width, config.height),
-                        false,
-                    )
-                    .with_context(|| {
-                        "Failed to start RTSP capture (software fallback)".to_string()
-                    })?
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| "Failed to start RTSP capture".to_string());
-                }
-            }
-        }
-        SourceKind::Udp => {
-            match video_ingest::spawn_udp_reader(
-                &config.camera_uri,
-                (config.width, config.height),
-                config.use_nvdec,
-            ) {
-                Ok(rx) => rx,
-                Err(err) if config.use_nvdec => {
-                    warn!(
-                        "UDP NVDEC setup failed ({}); falling back to software decode",
-                        err
-                    );
-                    video_ingest::spawn_udp_reader(
-                        &config.camera_uri,
-                        (config.width, config.height),
-                        false,
-                    )
-                    .with_context(|| {
-                        "Failed to start UDP capture (software fallback)".to_string()
-                    })?
-                }
-                Err(err) => {
-                    return Err(err).with_context(|| "Failed to start UDP capture".to_string());
-                }
-            }
-        }
-        SourceKind::Device => {
-            if config.use_nvdec {
-                match video_ingest::spawn_nvdec_h264_reader(
+    let receiver = {
+        let ingest_span = tracing::info_span!(
+            "vision.video_ingest",
+            uri = %config.camera_uri,
+            width = config.width,
+            height = config.height,
+            kind = tracing::field::display(format_args!("{:?}", config.source_kind)),
+            nvdec = config.use_nvdec,
+            transport = tracing::field::Empty,
+            decoder = tracing::field::Empty,
+        );
+        let _ingest_guard = ingest_span.enter();
+
+        match config.source_kind {
+            SourceKind::Rtsp => {
+                ingest_span.record("transport", &tracing::field::display("rtsp"));
+                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let rx = match video_ingest::spawn_rtsp_reader(
                     &config.camera_uri,
                     (config.width, config.height),
+                    config.use_nvdec,
                 ) {
                     Ok(rx) => rx,
-                    Err(err) => {
+                    Err(err) if config.use_nvdec => {
                         warn!(
-                            "NVDEC capture failed ({}); falling back to V4L software capture",
+                            "RTSP NVDEC setup failed ({}); falling back to software decode",
                             err
                         );
-                        video_ingest::spawn_camera_reader(
+                        decoder = "software";
+                        video_ingest::spawn_rtsp_reader(
                             &config.camera_uri,
                             (config.width, config.height),
+                            false,
                         )
-                        .with_context(|| "Failed to start capture".to_string())?
+                        .with_context(|| {
+                            "Failed to start RTSP capture (software fallback)".to_string()
+                        })?
                     }
-                }
-            } else {
-                video_ingest::spawn_camera_reader(&config.camera_uri, (config.width, config.height))
+                    Err(err) => {
+                        return Err(err).with_context(|| "Failed to start RTSP capture".to_string());
+                    }
+                };
+                ingest_span.record("decoder", &tracing::field::display(decoder));
+                rx
+            }
+            SourceKind::Udp => {
+                ingest_span.record("transport", &tracing::field::display("udp"));
+                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let rx = match video_ingest::spawn_udp_reader(
+                    &config.camera_uri,
+                    (config.width, config.height),
+                    config.use_nvdec,
+                ) {
+                    Ok(rx) => rx,
+                    Err(err) if config.use_nvdec => {
+                        warn!(
+                            "UDP NVDEC setup failed ({}); falling back to software decode",
+                            err
+                        );
+                        decoder = "software";
+                        video_ingest::spawn_udp_reader(
+                            &config.camera_uri,
+                            (config.width, config.height),
+                            false,
+                        )
+                        .with_context(|| {
+                            "Failed to start UDP capture (software fallback)".to_string()
+                        })?
+                    }
+                    Err(err) => {
+                        return Err(err).with_context(|| "Failed to start UDP capture".to_string());
+                    }
+                };
+                ingest_span.record("decoder", &tracing::field::display(decoder));
+                rx
+            }
+            SourceKind::Device => {
+                ingest_span.record("transport", &tracing::field::display("device"));
+                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let rx = if config.use_nvdec {
+                    match video_ingest::spawn_nvdec_h264_reader(
+                        &config.camera_uri,
+                        (config.width, config.height),
+                    ) {
+                        Ok(rx) => rx,
+                        Err(err) => {
+                            warn!(
+                                "NVDEC capture failed ({}); falling back to V4L software capture",
+                                err
+                            );
+                            decoder = "software";
+                            video_ingest::spawn_camera_reader(
+                                &config.camera_uri,
+                                (config.width, config.height),
+                            )
+                            .with_context(|| "Failed to start capture".to_string())?
+                        }
+                    }
+                } else {
+                    video_ingest::spawn_camera_reader(
+                        &config.camera_uri,
+                        (config.width, config.height),
+                    )
                     .with_context(|| "Failed to start capture".to_string())?
+                };
+                ingest_span.record("decoder", &tracing::field::display(decoder));
+                rx
             }
         }
     };
@@ -466,7 +498,6 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     }
 
     drain_completed_frame_spans(&frame_done_rx, &mut inflight_spans);
-    inflight_spans.clear();
 
     debug!("Stopping vision pipeline");
     println!("Stopping vision pipeline");
@@ -478,6 +509,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     }
     drop(encode_tx);
     let _ = encode_handle.join();
+    drain_completed_frame_spans(&frame_done_rx, &mut inflight_spans);
+    inflight_spans.clear();
     let _ = watchdog_handle.join();
     preview_server.stop();
 
