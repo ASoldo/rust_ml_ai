@@ -18,7 +18,7 @@ use num_cpus;
 use serde::Deserialize;
 use serde_json::to_string;
 use tokio::sync::oneshot;
-use tracing::{Instrument, error, info_span};
+use tracing::error;
 
 use crate::pipeline::{
     data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
@@ -69,27 +69,7 @@ pub(crate) fn spawn_preview_server(
         let server_future = async move {
             let server = HttpServer::new(move || {
                 App::new()
-                    .wrap_fn(|req, srv| {
-                        let method = req.method().clone();
-                        let path = req.path().to_owned();
-                        let span = tracing::info_span!(
-                            "vision.http.request",
-                            method = %method,
-                            path = %path,
-                            status = tracing::field::Empty
-                        );
-                        let fut = srv.call(req);
-                        async move {
-                            let res = fut.instrument(span.clone()).await;
-                            if let Ok(ref response) = res {
-                                span.record(
-                                    "status",
-                                    &tracing::field::display(response.status().as_u16()),
-                                );
-                            }
-                            res
-                        }
-                    })
+                    .wrap_fn(|req, srv| srv.call(req))
                     .app_data(web::Data::new(ServerState {
                         latest: server_shared.clone(),
                         history: server_history.clone(),
@@ -116,11 +96,7 @@ pub(crate) fn spawn_preview_server(
             });
 
             server.await
-        }
-        .instrument(info_span!(
-            "vision.server.actix",
-            workers = actix_workers as u64
-        ));
+        };
 
         if let Err(err) = actix_web::rt::System::new().block_on(server_future) {
             error!("HTTP server error: {err}");
@@ -153,7 +129,6 @@ fn history_frame(history: &FrameHistory, frame_number: u64) -> Option<FramePacke
 }
 
 /// Return a single JPEG frame by sequence number or the latest frame.
-#[tracing::instrument(name = "vision.http.frame", skip(state))]
 async fn frame_handler(
     query: web::Query<FrameQuery>,
     state: web::Data<ServerState>,
@@ -188,7 +163,6 @@ async fn frame_handler(
 }
 
 /// Stream the MJPEG feed over a multipart response.
-#[tracing::instrument(name = "vision.http.stream_frames", skip(state))]
 async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
     let state = state.clone();
     let stream = stream! {
