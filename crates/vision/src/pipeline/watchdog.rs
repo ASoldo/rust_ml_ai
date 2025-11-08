@@ -16,7 +16,7 @@ use std::{
 
 use tracing::error;
 
-use crate::vision::telemetry;
+use crate::pipeline::telemetry;
 
 /// Sleep interval between watchdog health checks.
 pub(crate) const WATCHDOG_POLL_INTERVAL_MS: u64 = 500;

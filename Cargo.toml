@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/app",
+    "crates/vision",
     "crates/gpu-kernels",
     "crates/ml-core",
     "crates/video-ingest",

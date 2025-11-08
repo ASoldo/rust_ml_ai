@@ -19,7 +19,7 @@ use crossbeam_channel::{Receiver, TrySendError};
 use ml_core::tch::{Cuda, Device};
 use tracing::{Span, debug, error, warn};
 
-use crate::vision::{
+use crate::pipeline::{
     SourceKind, VisionConfig,
     data::{FRAME_HISTORY_CAPACITY, FrameHistory, SharedFrame},
     encoding::{EncodeJob, spawn_encode_worker},

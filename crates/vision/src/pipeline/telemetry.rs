@@ -18,7 +18,7 @@ use tracing_subscriber::{
     prelude::*,
 };
 
-use crate::vision::config::TelemetryOptions;
+use crate::pipeline::config::TelemetryOptions;
 
 static PROM_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static PROM_UPKEEP_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();

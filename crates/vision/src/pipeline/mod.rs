@@ -3,7 +3,7 @@
 //!
 //! The module is split into focused submodules:
 //! - `config`: CLI configuration parsing.
-//! - `pipeline`: Orchestrates the capture → process → encode loop.
+//! - `engine`: Orchestrates the capture → process → encode loop.
 //! - `processing`: Detector workers and CPU/GPU annotation hand-off.
 //! - `encoding`: JPEG encode handling for CPU/GPU paths.
 //! - `server`: Actix Web preview endpoints.
@@ -16,13 +16,13 @@
 /// into submodules.
 pub use config::{SourceKind, VisionCliArgs, VisionConfig};
 /// Launch the vision pipeline with a ready-made configuration.
-pub use pipeline::run;
+pub use engine::run;
 
 mod annotation;
 mod config;
 mod data;
 mod encoding;
-mod pipeline;
+mod engine;
 mod processing;
 mod runtime;
 mod server;

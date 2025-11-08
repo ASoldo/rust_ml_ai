@@ -136,7 +136,7 @@ The repository contains a Rust workspace for GPU-first perception. The `vision` 
 - When running in Docker, install NVIDIA Container Toolkit and expose the target camera device.
 
 ## Extensibility Notes
-- Add new HTML surfaces under `crates/app/src/html/` and export them via `html/mod.rs`.
+- Add new HTML surfaces under `crates/vision/src/html/` and export them via `html/mod.rs`.
 - Additional detectors can piggyback on the existing TorchScript loader; ensure input resolution matches exported shapes.
 - For multi-camera deployments, spawn multiple capture threads and publish additional MJPEG endpoints—the worker design already uses bounded queues and atomic shutdown flags.
 

@@ -18,7 +18,7 @@ use crossbeam_channel::{Receiver, Sender};
 use gpu_kernels::VisionRuntime;
 use tracing::{Span, error};
 
-use crate::vision::{
+use crate::pipeline::{
     data::{DetectionSummary, FRAME_HISTORY_CAPACITY, FrameHistory, FramePacket, SharedFrame},
     telemetry,
     watchdog::{HealthComponent, PipelineHealth},

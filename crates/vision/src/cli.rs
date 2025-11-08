@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "with-tch")]
 use crate::{
     mnist::{self, MnistPredictArgs, MnistTrainArgs},
-    vision::{self, VisionCliArgs, VisionConfig},
+    pipeline::{self, VisionCliArgs, VisionConfig},
 };
 
 /// Parse CLI arguments and run the requested subcommand.
@@ -26,7 +26,7 @@ pub fn dispatch() -> Result<bool> {
     match cli.command {
         Some(Command::Vision(args)) => {
             let config = VisionConfig::try_from(args)?;
-            vision::run(config)?;
+            pipeline::run(config)?;
             Ok(true)
         }
         Some(Command::MnistTrain(args)) => {

@@ -1,5 +1,5 @@
 //! Binary entrypoint for the `vision` application. The binary wires CLI parsing,
-//! GPU initialisation, and the high-level orchestrations exposed by the `vision`
+//! GPU initialisation, and the high-level orchestrations exposed by the `pipeline`
 //! module.
 
 mod cli;
@@ -10,7 +10,7 @@ mod html;
 #[cfg(feature = "with-tch")]
 mod mnist;
 #[cfg(feature = "with-tch")]
-mod vision;
+mod pipeline;
 
 fn main() {
     if let Err(err) = run() {

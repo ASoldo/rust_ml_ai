@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow};
 use gpu_kernels::VisionRuntime;
 use image::{DynamicImage, ImageBuffer, Rgba, codecs::jpeg::JpegEncoder};
 
-use crate::vision::{
+use crate::pipeline::{
     data::{DetectionSummary, FramePacket},
     encoding::GpuEncodeJob,
 };

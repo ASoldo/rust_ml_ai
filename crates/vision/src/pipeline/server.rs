@@ -20,7 +20,7 @@ use serde_json::to_string;
 use tokio::sync::oneshot;
 use tracing::{Instrument, error, info_span};
 
-use crate::vision::{
+use crate::pipeline::{
     data::{DetectionsResponse, FrameHistory, FramePacket, SharedFrame},
     telemetry,
 };

@@ -26,7 +26,7 @@ use ml_core::{
 use tracing::{Span, debug, error};
 use video_ingest::{Frame, FrameFormat};
 
-use crate::vision::{
+use crate::pipeline::{
     annotation::{annotate_frame_cpu, annotate_frame_gpu},
     data::DetectionSummary,
     encoding::EncodeJob,
