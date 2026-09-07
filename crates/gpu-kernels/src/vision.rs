@@ -641,7 +641,21 @@ impl VisionRuntime {
         Ok(())
     }
 
-    /// Downloads the resized BGR frame into host memory.
+    /// Replace the annotation buffer with a complete frame in capture coordinates.
+    pub fn upload_bgr(&mut self, bgr: &[u8], width: i32, height: i32) -> Result<()> {
+        self._context.bind_to_thread()?;
+        if width <= 0 || height <= 0 || bgr.len() != width as usize * height as usize * 3 {
+            return Err("invalid annotation frame dimensions or buffer length".into());
+        }
+        self.ensure_resized_buffer(bgr.len())?;
+        let stream = self.stream.clone();
+        let mut view = self.resized_bgr.as_mut().unwrap().slice_mut(..bgr.len());
+        stream.memcpy_htod(bgr, &mut view)?;
+        drop(view);
+        stream.synchronize()?;
+        Ok(())
+    }
+
     /// Download the resized BGR buffer into host memory.
     pub fn download_bgr(&self, width: i32, height: i32) -> Result<Vec<u8>> {
         let span = info_span!("vision.gpu.download", width = width, height = height);
@@ -649,8 +663,10 @@ impl VisionRuntime {
         let len = (width as usize) * (height as usize) * 3;
         if let Some(ref buf) = self.resized_bgr {
             let mut host = vec![0u8; len];
-            info_span!("vision.cuda.memcpy", direction = "dtoh", bytes = len)
-                .in_scope(|| self.stream.memcpy_dtoh(buf, host.as_mut_slice()))?;
+            info_span!("vision.cuda.memcpy", direction = "dtoh", bytes = len).in_scope(|| {
+                self.stream
+                    .memcpy_dtoh(&buf.slice(..len), host.as_mut_slice())
+            })?;
             info_span!("vision.cuda.stream_sync", op = "download")
                 .in_scope(|| self.stream.synchronize())?;
             Ok(host)

@@ -53,6 +53,8 @@ impl PreviewServer {
 #[derive(Debug, Deserialize)]
 struct FrameQuery {
     frame: Option<u64>,
+    #[serde(default)]
+    strict: bool,
 }
 
 /// Spawn the preview server thread and return a handle that can stop it.
@@ -75,6 +77,7 @@ pub(crate) fn spawn_preview_server(
                         history: server_history.clone(),
                     }))
                     .route("/atak", web::get().to(atak_route))
+                    .route("/operator", web::get().to(operator_route))
                     .route("/", web::get().to(index_route))
                     .route("/frame.jpg", web::get().to(frame_handler))
                     .route("/stream.mjpg", web::get().to(stream_handler))
@@ -92,7 +95,10 @@ pub(crate) fn spawn_preview_server(
             let srv_handle = server.handle();
             actix_web::rt::spawn(async move {
                 let _ = shutdown_rx.await;
-                srv_handle.stop(true).await;
+                // MJPEG/SSE responses are intentionally unbounded. Waiting for
+                // them to finish keeps stale frames visible and delays capture
+                // recovery by the server's graceful-shutdown timeout.
+                srv_handle.stop(false).await;
             });
 
             server.await
@@ -136,10 +142,18 @@ async fn frame_handler(
     if let Some(requested) = query.frame {
         if let Some(packet) = history_frame(&state.history, requested) {
             return HttpResponse::Ok()
+                .insert_header((header::CACHE_CONTROL, "no-store"))
+                .insert_header(("X-Sequence", packet.frame_number.to_string()))
                 .content_type("image/jpeg")
                 .body(packet.jpeg);
+        } else if query.strict {
+            return HttpResponse::NotFound()
+                .insert_header((header::CACHE_CONTROL, "no-store"))
+                .body("requested frame is no longer buffered");
         } else if let Some(latest) = latest_frame(&state.latest) {
             return HttpResponse::Ok()
+                .insert_header((header::CACHE_CONTROL, "no-store"))
+                .insert_header(("X-Sequence", latest.frame_number.to_string()))
                 .append_header((
                     header::WARNING,
                     format!(
@@ -156,6 +170,8 @@ async fn frame_handler(
 
     match latest_frame(&state.latest) {
         Some(packet) => HttpResponse::Ok()
+            .insert_header((header::CACHE_CONTROL, "no-store"))
+            .insert_header(("X-Sequence", packet.frame_number.to_string()))
             .content_type("image/jpeg")
             .body(packet.jpeg),
         None => HttpResponse::NoContent().finish(),
@@ -178,7 +194,10 @@ async fn stream_handler(state: web::Data<ServerState>) -> HttpResponse {
                 let mut payload = Vec::with_capacity(packet.jpeg.len() + 64);
                 payload.extend_from_slice(b"--frame\r\n");
                 payload.extend_from_slice(
-                    format!("X-Sequence: {}\r\n", packet.frame_number).as_bytes(),
+                    format!(
+                        "X-Sequence: {}\r\nContent-Length: {}\r\n",
+                        packet.frame_number, packet.jpeg.len()
+                    ).as_bytes(),
                 );
                 payload.extend_from_slice(b"Content-Type: image/jpeg\r\n\r\n");
                 payload.extend_from_slice(&packet.jpeg);
@@ -215,6 +234,14 @@ async fn metrics_handler() -> HttpResponse {
 }
 
 /// Serve the default HUD HTML.
+async fn operator_route() -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header((header::CACHE_CONTROL, "no-cache"))
+        .content_type("text/html; charset=utf-8")
+        .body(crate::html::OPERATOR_HTML)
+}
+
+/// Serve the default HUD HTML.
 #[tracing::instrument(name = "vision.http.index")]
 async fn index_route() -> HttpResponse {
     HttpResponse::Ok()
@@ -238,12 +265,14 @@ async fn detections_handler(state: web::Data<ServerState>) -> HttpResponse {
         Err(err) => return HttpResponse::InternalServerError().body(err.to_string()),
     };
     if let Some(ref packet) = *guard {
-        HttpResponse::Ok().json(DetectionsResponse {
-            timestamp_ms: packet.timestamp_ms,
-            frame_number: packet.frame_number,
-            fps: packet.fps,
-            detections: &packet.detections,
-        })
+        HttpResponse::Ok()
+            .insert_header((header::CACHE_CONTROL, "no-store"))
+            .json(DetectionsResponse {
+                timestamp_ms: packet.timestamp_ms,
+                frame_number: packet.frame_number,
+                fps: packet.fps,
+                detections: &packet.detections,
+            })
     } else {
         HttpResponse::NoContent().finish()
     }
@@ -301,4 +330,94 @@ async fn stream_detections_handler(state: web::Data<ServerState>) -> HttpRespons
         .append_header(("Content-Type", "text/event-stream"))
         .append_header(("Connection", "keep-alive"))
         .streaming(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{http::StatusCode, test};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    fn state() -> web::Data<ServerState> {
+        let packet = FramePacket {
+            jpeg: vec![0xff, 0xd8, 0xff, 0xd9],
+            detections: vec![],
+            timestamp_ms: 1000,
+            frame_number: 42,
+            fps: 15.0,
+        };
+        web::Data::new(ServerState {
+            latest: Arc::new(Mutex::new(Some(packet.clone()))),
+            history: Arc::new(Mutex::new(VecDeque::from([packet]))),
+        })
+    }
+
+    #[actix_web::test]
+    async fn strict_frame_returns_matching_sequence_and_uncached_jpeg() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state())
+                .route("/frame.jpg", web::get().to(frame_handler)),
+        )
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/frame.jpg?frame=42&strict=true")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("X-Sequence").unwrap(), "42");
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        assert!(!response.headers().contains_key(header::WARNING));
+        assert_eq!(
+            test::read_body(response).await.as_ref(),
+            &[0xff, 0xd8, 0xff, 0xd9]
+        );
+    }
+
+    #[actix_web::test]
+    async fn strict_frame_never_substitutes_latest_for_expired_frame() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state())
+                .route("/frame.jpg", web::get().to(frame_handler)),
+        )
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/frame.jpg?frame=1&strict=true")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn legacy_frame_request_keeps_explicit_latest_fallback() {
+        let app = test::init_service(
+            App::new()
+                .app_data(state())
+                .route("/frame.jpg", web::get().to(frame_handler)),
+        )
+        .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/frame.jpg?frame=1")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("X-Sequence").unwrap(), "42");
+        assert!(response.headers().contains_key(header::WARNING));
+    }
 }

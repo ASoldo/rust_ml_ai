@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use crossbeam_channel::{Receiver, TrySendError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, TrySendError};
 use ml_core::tch::{Cuda, Device};
 use tracing::{Span, debug, error, warn};
 
@@ -23,7 +23,8 @@ use crate::pipeline::{
     SourceKind, VisionConfig,
     data::{FRAME_HISTORY_CAPACITY, FrameHistory, SharedFrame},
     encoding::{EncodeJob, spawn_encode_worker},
-    processing::{DetectorInit, FrameTask, SimpleTracker, spawn_processing_worker},
+    frame_rate::FrameRate,
+    processing::{DetectorInit, FrameTask, Tracker, spawn_processing_worker},
     runtime::load_torch_cuda_runtime,
     server::spawn_preview_server,
     telemetry,
@@ -160,7 +161,11 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
         match config.source_kind {
             SourceKind::Rtsp => {
                 ingest_span.record("transport", &tracing::field::display("rtsp"));
-                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let mut decoder = if config.use_nvdec {
+                    "nvdec"
+                } else {
+                    "software"
+                };
                 let rx = match video_ingest::spawn_rtsp_reader(
                     &config.camera_uri,
                     (config.width, config.height),
@@ -183,15 +188,26 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         })?
                     }
                     Err(err) => {
-                        return Err(err).with_context(|| "Failed to start RTSP capture".to_string());
+                        return Err(err)
+                            .with_context(|| "Failed to start RTSP capture".to_string());
                     }
                 };
                 ingest_span.record("decoder", &tracing::field::display(decoder));
                 rx
             }
+            SourceKind::Http => {
+                ingest_span.record("transport", &tracing::field::display("http"));
+                ingest_span.record("decoder", &tracing::field::display("mjpeg"));
+                video_ingest::spawn_http_reader(&config.camera_uri, (config.width, config.height))
+                    .context("Failed to start HTTP MJPEG capture")?
+            }
             SourceKind::Udp => {
                 ingest_span.record("transport", &tracing::field::display("udp"));
-                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let mut decoder = if config.use_nvdec {
+                    "nvdec"
+                } else {
+                    "software"
+                };
                 let rx = match video_ingest::spawn_udp_reader(
                     &config.camera_uri,
                     (config.width, config.height),
@@ -222,7 +238,11 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
             }
             SourceKind::Device => {
                 ingest_span.record("transport", &tracing::field::display("device"));
-                let mut decoder = if config.use_nvdec { "nvdec" } else { "software" };
+                let mut decoder = if config.use_nvdec {
+                    "nvdec"
+                } else {
+                    "software"
+                };
                 let rx = if config.use_nvdec {
                     match video_ingest::spawn_nvdec_h264_reader(
                         &config.camera_uri,
@@ -240,6 +260,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                                 (config.width, config.height),
                             )
                             .with_context(|| "Failed to start capture".to_string())?
+                            .into()
                         }
                     }
                 } else {
@@ -248,6 +269,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                         (config.width, config.height),
                     )
                     .with_context(|| "Failed to start capture".to_string())?
+                    .into()
                 };
                 ingest_span.record("decoder", &tracing::field::display(decoder));
                 rx
@@ -258,7 +280,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     let shared: SharedFrame = Arc::new(Mutex::new(None));
     let history: FrameHistory =
         Arc::new(Mutex::new(VecDeque::with_capacity(FRAME_HISTORY_CAPACITY)));
-    let tracker = Arc::new(Mutex::new(SimpleTracker::default()));
+    let tracker = Arc::new(Mutex::new(Tracker::default()));
     let processing_queue = std::cmp::max(
         3,
         config
@@ -274,6 +296,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
 
     let detector_init = DetectorInit {
         model_path: config.model_path.clone(),
+        pose_model_path: config.pose_model_path.clone(),
+        segmentation_model_path: config.segmentation_model_path.clone(),
         device,
         input_size: (config.detector_width as i64, config.detector_height as i64),
     };
@@ -281,7 +305,11 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     let (init_tx, init_rx) =
         crossbeam_channel::bounded::<std::result::Result<String, String>>(config.processor_workers);
 
-    let health = Arc::new(PipelineHealth::new());
+    let health = Arc::new(if config.source_kind == SourceKind::Http {
+        PipelineHealth::with_stale_threshold_ms(5_000)
+    } else {
+        PipelineHealth::new()
+    });
     let pipeline_running = Arc::new(AtomicBool::new(true));
     let watchdog_state = Arc::new(WatchdogState::new());
 
@@ -368,7 +396,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     }
 
     let mut frame_number: u64 = 0;
-    let mut smoothed_fps: f32 = 0.0;
+    let mut frame_rate = FrameRate::default();
     let mut last_instant = Instant::now();
     let mut dropped_frames: u64 = 0;
     let mut restart_reason: Option<&'static str> = None;
@@ -380,7 +408,8 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
             break;
         }
 
-        let frame_result = tracing::info_span!("capture.recv").in_scope(|| receiver.recv());
+        let frame_result = tracing::info_span!("capture.recv")
+            .in_scope(|| receiver.recv_timeout(Duration::from_millis(100)));
         match frame_result {
             Ok(frame) => match frame {
                 Ok(frame) => {
@@ -403,15 +432,10 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                     let elapsed = now.duration_since(last_instant).as_secs_f32();
                     last_instant = now;
                     if elapsed > 0.0 {
-                        let instant = 1.0 / elapsed;
-                        smoothed_fps = if smoothed_fps == 0.0 {
-                            instant
-                        } else {
-                            0.9 * smoothed_fps + 0.1 * instant
-                        };
                         metrics::histogram!("vision_capture_frame_interval_seconds")
                             .record(elapsed as f64);
                     }
+                    let smoothed_fps = frame_rate.record(now);
                     metrics::gauge!("vision_pipeline_fps").set(smoothed_fps as f64);
 
                     let capture_span = tracing::info_span!(
@@ -488,6 +512,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
                     break;
                 }
             },
+            Err(RecvTimeoutError::Timeout) => continue,
             Err(err) => {
                 error!("Frame channel closed: {err}");
                 restart_reason = Some("capture channel closed");
@@ -503,6 +528,7 @@ fn run_pipeline_once(config: VisionConfig, shutdown: Arc<AtomicBool>) -> Result<
     println!("Stopping vision pipeline");
 
     pipeline_running.store(false, Ordering::SeqCst);
+    drop(receiver);
     drop(work_tx);
     for handle in processing_handles {
         let _ = handle.join();

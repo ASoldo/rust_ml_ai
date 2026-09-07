@@ -5,3 +5,6 @@
 
 pub mod atak;
 pub mod hud_html;
+
+/// The operator console has one source asset, embedded in the executable.
+pub const OPERATOR_HTML: &str = include_str!("../../../../html/operator.html");

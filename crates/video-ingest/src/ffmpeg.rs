@@ -4,12 +4,14 @@ use std::{
     fmt::Write,
     io::{Read, Write as IoWrite},
     process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 
 use crate::{
     camera::parse_device_index,
@@ -24,12 +26,63 @@ struct FfmpegSpanFields {
     decoder: String,
 }
 
+/// A frame receiver that also owns the capture process. Dropping it interrupts
+/// a blocked stdout read and reaps FFmpeg, including during pipeline restarts.
+pub struct CaptureReader {
+    receiver: Receiver<Result<Frame, CaptureError>>,
+    process: Option<Arc<CaptureProcess>>,
+}
+
+impl CaptureReader {
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Result<Frame, CaptureError>, RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
+}
+
+impl From<Receiver<Result<Frame, CaptureError>>> for CaptureReader {
+    fn from(receiver: Receiver<Result<Frame, CaptureError>>) -> Self {
+        Self {
+            receiver,
+            process: None,
+        }
+    }
+}
+
+impl Drop for CaptureReader {
+    fn drop(&mut self) {
+        if let Some(process) = &self.process {
+            process.stop();
+        }
+    }
+}
+
+struct CaptureProcess(Mutex<Child>);
+
+impl CaptureProcess {
+    fn stop(&self) {
+        let mut child = self.0.lock().unwrap_or_else(|err| err.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn ffmpeg_command() -> Command {
+    let mut cmd =
+        Command::new(std::env::var_os("VISION_FFMPEG_BIN").unwrap_or_else(|| "ffmpeg".into()));
+    // The vision process can require a private Torch/OpenCV runtime. A system
+    // FFmpeg must be able to use its own libraries instead of inheriting it.
+    if std::env::var_os("VISION_FFMPEG_CLEAN_LIBRARY_PATH").as_deref() == Some("1".as_ref()) {
+        cmd.env_remove("LD_LIBRARY_PATH").env_remove("LD_PRELOAD");
+    }
+    cmd
+}
+
 /// Spawns an FFmpeg process that uses NVDEC (via CUDA) to decode an H.264 stream and
 /// yields BGR8 frames via a background thread.
-pub fn spawn_nvdec_h264_reader(
-    uri: &str,
-    target_size: (i32, i32),
-) -> Result<Receiver<Result<Frame, CaptureError>>> {
+pub fn spawn_nvdec_h264_reader(uri: &str, target_size: (i32, i32)) -> Result<CaptureReader> {
     let uri = uri.to_string();
     let scale_arg = format!("scale={}:{}", target_size.0, target_size.1);
 
@@ -41,7 +94,7 @@ pub fn spawn_nvdec_h264_reader(
         (false, uri.clone())
     };
 
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = ffmpeg_command();
     cmd.arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -73,7 +126,11 @@ pub fn spawn_nvdec_h264_reader(
         uri: ffmpeg_uri.clone(),
         width: target_size.0,
         height: target_size.1,
-        transport: if is_v4l { "device".into() } else { "uri".into() },
+        transport: if is_v4l {
+            "device".into()
+        } else {
+            "uri".into()
+        },
         decoder: "nvdec".into(),
     };
 
@@ -85,20 +142,25 @@ pub fn spawn_rtsp_reader(
     uri: &str,
     target_size: (i32, i32),
     use_nvdec: bool,
-) -> Result<Receiver<Result<Frame, CaptureError>>> {
+) -> Result<CaptureReader> {
     let scale_arg = format!("scale={}:{}", target_size.0, target_size.1);
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = ffmpeg_command();
     cmd.arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
         .arg("-rtsp_transport")
         .arg("tcp")
-        .arg("-fflags")
-        .arg("nobuffer")
-        .arg("-flags")
-        .arg("low_delay")
-        .arg("-max_delay")
-        .arg("0");
+        // Keep packets encountered while probing, including the first keyframe.
+        .arg("-analyzeduration")
+        .arg("10000000")
+        .arg("-probesize")
+        .arg("10000000")
+        .arg("-timeout")
+        .arg("15000000")
+        .arg("-threads")
+        .arg("2")
+        .arg("-filter_threads")
+        .arg("1");
 
     if use_nvdec {
         cmd.arg("-hwaccel")
@@ -111,10 +173,15 @@ pub fn spawn_rtsp_reader(
 
     cmd.arg("-i")
         .arg(uri)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-an")
         .arg("-vf")
         .arg(&scale_arg)
         .arg("-pix_fmt")
         .arg("bgr24")
+        .arg("-fps_mode")
+        .arg("passthrough")
         .arg("-f")
         .arg("rawvideo")
         .arg("-");
@@ -124,7 +191,48 @@ pub fn spawn_rtsp_reader(
         width: target_size.0,
         height: target_size.1,
         transport: "rtsp".into(),
-        decoder: if use_nvdec { "nvdec".into() } else { "software".into() },
+        decoder: if use_nvdec {
+            "nvdec".into()
+        } else {
+            "software".into()
+        },
+    };
+    spawn_ffmpeg_reader(cmd, target_size, 4, None, span_fields)
+}
+
+/// Spawn an HTTP multipart JPEG reader with the same bounded, owned lifecycle
+/// as RTSP capture. Each JPEG is independently decodable after network stalls.
+pub fn spawn_http_reader(uri: &str, target_size: (i32, i32)) -> Result<CaptureReader> {
+    let mut cmd = ffmpeg_command();
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "2",
+        "-filter_threads",
+        "1",
+    ])
+    .args(["-f", "mpjpeg", "-i", uri, "-map", "0:v:0", "-an", "-vf"])
+    .arg(format!(
+        "scale={}:{}:force_original_aspect_ratio=increase,crop={}:{}",
+        target_size.0, target_size.1, target_size.0, target_size.1
+    ))
+    .args([
+        "-pix_fmt",
+        "bgr24",
+        "-fps_mode",
+        "passthrough",
+        "-f",
+        "rawvideo",
+        "-",
+    ]);
+    let span_fields = FfmpegSpanFields {
+        uri: uri.to_string(),
+        width: target_size.0,
+        height: target_size.1,
+        transport: "http".into(),
+        decoder: "mjpeg".into(),
     };
     spawn_ffmpeg_reader(cmd, target_size, 4, None, span_fields)
 }
@@ -134,9 +242,9 @@ pub fn spawn_udp_reader(
     uri: &str,
     target_size: (i32, i32),
     use_nvdec: bool,
-) -> Result<Receiver<Result<Frame, CaptureError>>> {
+) -> Result<CaptureReader> {
     let scale_arg = format!("scale={}:{}", target_size.0, target_size.1);
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = ffmpeg_command();
     cmd.arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -173,7 +281,11 @@ pub fn spawn_udp_reader(
         width: target_size.0,
         height: target_size.1,
         transport: "udp".into(),
-        decoder: if use_nvdec { "nvdec".into() } else { "software".into() },
+        decoder: if use_nvdec {
+            "nvdec".into()
+        } else {
+            "software".into()
+        },
     };
     spawn_ffmpeg_reader(cmd, target_size, 4, Some(sdp), span_fields)
 }
@@ -254,7 +366,7 @@ fn spawn_ffmpeg_reader(
     queue_size: usize,
     stdin_payload: Option<String>,
     span_fields: FfmpegSpanFields,
-) -> Result<Receiver<Result<Frame, CaptureError>>> {
+) -> Result<CaptureReader> {
     let (tx, rx) = bounded(queue_size);
     if stdin_payload.is_some() {
         cmd.stdin(Stdio::piped());
@@ -273,12 +385,15 @@ fn spawn_ffmpeg_reader(
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(err) = stdin.write_all(payload.as_bytes()) {
                 let _ = child.kill();
+                let _ = child.wait();
                 return Err(CaptureError::Other(err.into()).into());
             }
         }
     }
 
+    let process = Arc::new(CaptureProcess(Mutex::new(child)));
     thread::spawn({
+        let process = process.clone();
         move || {
             let span = tracing::info_span!(
                 "vision.video_ingest.ffmpeg",
@@ -290,7 +405,9 @@ fn spawn_ffmpeg_reader(
             );
             let _guard = span.enter();
             let tx_clone = tx.clone();
-            match ffmpeg_loop(stdout, child, target_size, tx_clone.clone()) {
+            let result = ffmpeg_loop(stdout, target_size, tx_clone.clone());
+            process.stop();
+            match result {
                 Ok(()) => {}
                 Err(err) => {
                     tracing::error!(error = ?err, "ffmpeg capture loop exited");
@@ -300,13 +417,15 @@ fn spawn_ffmpeg_reader(
         }
     });
 
-    Ok(rx)
+    Ok(CaptureReader {
+        receiver: rx,
+        process: Some(process),
+    })
 }
 
 /// Blocking loop that copies raw frames from FFmpeg stdout into the channel.
 fn ffmpeg_loop(
     mut stdout: impl Read,
-    mut child: Child,
     target_size: (i32, i32),
     tx: Sender<Result<Frame, CaptureError>>,
 ) -> Result<(), CaptureError> {
@@ -338,6 +457,67 @@ fn ffmpeg_loop(
         }
     }
 
-    let _ = child.kill();
     result
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn spawn_test_reader(script: &str) -> CaptureReader {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        spawn_ffmpeg_reader(
+            cmd,
+            (1, 1),
+            1,
+            None,
+            FfmpegSpanFields {
+                uri: "test".into(),
+                width: 1,
+                height: 1,
+                transport: "test".into(),
+                decoder: "test".into(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dropping_reader_interrupts_silent_child_and_reaps_it() {
+        let reader = spawn_test_reader("exec sleep 30");
+        let process = reader.process.as_ref().unwrap().clone();
+        assert!(matches!(
+            reader.recv_timeout(Duration::from_millis(20)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        let start = Instant::now();
+        drop(reader);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(process.0.lock().unwrap().try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn short_frame_reports_capture_error_and_reaps_child() {
+        let reader = spawn_test_reader("printf x");
+        assert!(
+            reader
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            reader
+                .process
+                .as_ref()
+                .unwrap()
+                .0
+                .lock()
+                .unwrap()
+                .try_wait()
+                .unwrap()
+                .is_some()
+        );
+    }
 }

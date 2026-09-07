@@ -10,6 +10,8 @@ mod types;
 /// Spawn a threaded V4L / OpenCV capture loop pulling BGR frames.
 pub use camera::spawn_camera_reader;
 /// Spawn FFmpeg NVDEC capture for direct device inputs.
-pub use ffmpeg::{spawn_nvdec_h264_reader, spawn_rtsp_reader, spawn_udp_reader};
+pub use ffmpeg::{
+    CaptureReader, spawn_http_reader, spawn_nvdec_h264_reader, spawn_rtsp_reader, spawn_udp_reader,
+};
 /// Types shared between capture implementations.
 pub use types::{CaptureError, Frame, FrameFormat};

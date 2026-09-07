@@ -15,6 +15,8 @@ pub enum SourceKind {
     Device,
     /// Real-time streaming protocol feeds.
     Rtsp,
+    /// HTTP multipart JPEG video feeds.
+    Http,
     /// UDP socket carrying H.264 via RTP.
     Udp,
 }
@@ -24,6 +26,8 @@ impl SourceKind {
     pub(crate) fn from_uri(uri: &str) -> Self {
         if uri.starts_with("rtsp://") || uri.starts_with("rtsps://") {
             SourceKind::Rtsp
+        } else if uri.starts_with("http://") || uri.starts_with("https://") {
+            SourceKind::Http
         } else if uri.starts_with("udp://") {
             SourceKind::Udp
         } else {
@@ -41,6 +45,10 @@ pub struct VisionConfig {
     pub source_kind: SourceKind,
     /// TorchScript model path used by the detector workers.
     pub model_path: PathBuf,
+    /// Optional YOLO26 NMS-free COCO pose TorchScript model.
+    pub pose_model_path: Option<PathBuf>,
+    /// Optional person silhouettes; requires the pose model.
+    pub segmentation_model_path: Option<PathBuf>,
     /// Capture width streamed by the ingest component.
     pub width: i32,
     /// Capture height streamed by the ingest component.
@@ -96,6 +104,12 @@ pub struct VisionCliArgs {
     /// TorchScript model path flag (overrides positional).
     #[arg(long = "model", value_name = "PATH")]
     pub model_path_flag: Option<PathBuf>,
+    /// Add person boxes and 17 COCO keypoints from a YOLO26 pose export.
+    #[arg(long = "pose-model", value_name = "PATH")]
+    pub pose_model_path: Option<PathBuf>,
+    /// Add person silhouettes from a YOLO26n-seg TorchScript export.
+    #[arg(long = "seg-model", value_name = "PATH", requires = "pose_model_path")]
+    pub segmentation_model_path: Option<PathBuf>,
     /// Capture width flag (overrides positional).
     #[arg(long = "width", value_name = "PX")]
     pub width_flag: Option<i32>,
@@ -185,6 +199,14 @@ impl TryFrom<VisionCliArgs> for VisionConfig {
         if batch_size == 0 {
             bail!("--batch-size must be at least 1");
         }
+        if args.segmentation_model_path.is_some() && args.pose_model_path.is_none() {
+            bail!("--seg-model requires --pose-model for person association");
+        }
+        if args.pose_model_path.is_some()
+            && (batch_size != 1 || detector_width != 640 || detector_height != 640)
+        {
+            bail!("The supported pose export requires --batch-size 1 and 640x640 detector input");
+        }
 
         let telemetry = TelemetryOptions {
             chrome_trace_path: args.chrome_trace,
@@ -197,6 +219,8 @@ impl TryFrom<VisionCliArgs> for VisionConfig {
             camera_uri,
             source_kind,
             model_path,
+            pose_model_path: args.pose_model_path,
+            segmentation_model_path: args.segmentation_model_path,
             width,
             height,
             verbose: args.verbose,

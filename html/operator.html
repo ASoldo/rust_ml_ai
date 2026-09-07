@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#101412">
+  <link rel="icon" href="data:,">
+  <title>Vision — Operator console</title>
+  <style>
+    :root { --bg:#101412; --panel:#171d19; --line:#313a33; --dim:#9da99f; --text:#e4e9e2; --green:#94e6a4; --amber:#ecc681; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,a { -webkit-tap-highlight-color:transparent; }
+    button { color:inherit; font:inherit; cursor:pointer; border:1px solid var(--line); border-radius:3px; background:transparent; padding:8px 12px; min-height:38px; }
+    button:hover { background:#28332b; border-color:#67796b; }
+    button:focus-visible,a:focus-visible,summary:focus-visible { outline:2px solid var(--green); outline-offset:3px; }
+    button:disabled { opacity:.38; cursor:default; }
+    button[aria-pressed="true"] { background:#253b2b; border-color:var(--green); color:var(--green); }
+    [hidden] { display:none !important; }
+    a { color:var(--dim); text-decoration:none; }
+    a:hover { color:var(--text); }
+    .mono { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+    .eyebrow { color:var(--dim); font:10px/1.4 var(--mono); letter-spacing:.13em; text-transform:uppercase; }
+    .muted { color:var(--dim); }
+    .shell { min-height:100dvh; display:flex; flex-direction:column; }
+    .masthead { height:65px; flex-shrink:0; display:flex; align-items:center; gap:28px; padding:0 24px; border-bottom:1px solid var(--line); }
+    .brand { display:flex; align-items:center; gap:12px; font-size:17px; font-weight:600; letter-spacing:.2em; }
+    .brand svg { width:25px; height:25px; color:var(--green); }
+    .division { padding-left:26px; border-left:1px solid var(--line); }
+    .right { margin-left:auto; display:flex; align-items:center; gap:22px; }
+    .status { display:inline-flex; align-items:center; gap:8px; font:11px var(--mono); letter-spacing:.06em; white-space:nowrap; }
+    .status::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+    [data-health="live"] { color:var(--green); }
+    [data-health="stale"],[data-health="connecting"] { color:var(--amber); }
+    [data-health="offline"] { color:#f3b4a2; }
+    .workspace { padding:22px 24px 16px; display:grid; grid-template-columns:minmax(0,1fr) 312px; gap:20px; flex:1; min-height:0; }
+    .camera { min-width:0; display:flex; flex-direction:column; }
+    .section-head { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin-bottom:15px; min-height:42px; }
+    h1 { font-size:21px; font-weight:500; margin:4px 0 0; letter-spacing:-.025em; }
+    .source-note { font-size:12px; color:var(--dim); }
+    .screen { border:1px solid var(--line); background:#080b09; display:flex; flex-direction:column; min-height:240px; flex:1; }
+    .screen-toolbar { padding:10px 14px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--line); background:#171d19; }
+    .screen-toolbar .source-name { margin-right:auto; display:flex; align-items:center; gap:9px; font-size:12px; }
+    .source-name svg { width:17px; height:17px; color:var(--green); }
+    .screen-toolbar button { font-size:12px; min-height:32px; padding:5px 10px; }
+    .viewport { flex:1; min-height:280px; position:relative; display:grid; place-items:center; overflow:hidden; }
+    .image-wrap { width:100%; height:100%; position:absolute; inset:0; display:grid; place-items:center; }
+    #video { position:absolute; inset:0; object-fit:contain; width:100%; height:100%; display:block; cursor:crosshair; }
+    #selection { position:absolute; pointer-events:none; border:1px solid var(--green); box-shadow:0 0 0 1px #101412; }
+    #selection::before { content:"SELECTED"; position:absolute; left:-1px; top:-19px; padding:2px 6px; background:var(--green); color:#0d2212; font:10px var(--mono); }
+    .empty-screen { text-align:center; z-index:1; max-width:290px; pointer-events:none; }
+    .empty-screen svg { width:38px; height:38px; color:#6f8173; margin-bottom:16px; }
+    .empty-screen strong { display:block; font-size:17px; font-weight:500; }
+    .empty-screen p { color:var(--dim); font-size:12px; }
+    .frame-alert { position:absolute; bottom:14px; left:14px; right:14px; padding:10px 13px; background:#1d211df2; border:1px solid var(--amber); color:var(--amber); font:11px/1.6 var(--mono); z-index:2; }
+    .screen-foot { padding:9px 14px; color:var(--dim); display:flex; justify-content:space-between; gap:10px; font:10px/1.5 var(--mono); border-top:1px solid var(--line); letter-spacing:.035em; }
+    .telemetry { display:grid; grid-template-columns:1.15fr 1fr 1fr 1.35fr; margin-top:16px; border:1px solid var(--line); }
+    .metric { padding:13px 16px; border-right:1px solid var(--line); min-width:0; }
+    .metric:last-child { border-right:0; }
+    .metric-value { font:23px/1.4 var(--mono); margin:5px 0 2px; white-space:nowrap; }
+    .unit { font:11px var(--mono); color:var(--dim); margin-left:5px; }
+    .metric-note { color:var(--dim); font-size:10px; }
+    #rate-chart { display:block; width:100%; height:30px; margin:4px 0; }
+    .aside { min-width:0; border-left:1px solid var(--line); padding-left:20px; display:flex; flex-direction:column; }
+    .aside-head { display:flex; justify-content:space-between; align-items:center; min-height:42px; margin-bottom:15px; }
+    h2 { font-size:15px; font-weight:500; margin:0; }
+    .count { font:11px var(--mono); color:var(--dim); padding:3px 7px; background:#252d27; border-radius:2px; }
+    .filters { display:flex; gap:4px; border-bottom:1px solid var(--line); padding-bottom:13px; }
+    .filters button { font-size:11px; min-height:29px; padding:4px 10px; }
+    .track-list { max-height:210px; overflow:auto; padding:10px 0; display:flex; flex-direction:column; gap:5px; }
+    .track { width:100%; text-align:left; padding:11px; display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:10px; border-color:transparent; }
+    .track.selected { border-color:#709b79; background:#24322a; }
+    .track svg { width:24px; height:24px; color:var(--dim); }
+    .track.selected svg { color:var(--green); }
+    .track-name { font-size:12px; font-weight:500; }
+    .track-sub { color:var(--dim); font:10px var(--mono); margin-top:4px; }
+    .track-score { font:12px var(--mono); }
+    .track-state { color:var(--green); font:9px var(--mono); margin-top:5px; }
+    .track-state.new { color:var(--amber); }
+    .empty-list { color:var(--dim); padding:22px 10px; font-size:12px; border:1px dashed var(--line); margin:6px 0; }
+    .inspector { border-top:1px solid var(--line); margin-top:6px; padding-top:18px; flex:1; }
+    .inspector-head { display:flex; align-items:center; justify-content:space-between; margin:7px 0 16px; }
+    .inspector-head h2 { font-size:18px; }
+    .inspector-head button { font-size:12px; min-height:28px; padding:2px 8px; }
+    .selection-empty { padding:27px 0; color:var(--dim); font-size:12px; line-height:1.8; }
+    .detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px 10px; margin:0 0 20px; }
+    .detail-grid dt { color:var(--dim); font-size:10px; margin-bottom:5px; }
+    .detail-grid dd { margin:0; font:13px var(--mono); }
+    .confidence { height:3px; background:#323c34; margin-top:7px; }
+    .confidence span { display:block; height:100%; background:var(--green); }
+    .association { border:1px solid var(--line); padding:10px 11px; font-size:11px; margin:0 0 16px; color:var(--dim); }
+    details { border-top:1px solid var(--line); padding-top:10px; }
+    summary { cursor:pointer; color:var(--dim); font-size:11px; padding:3px 0 9px; }
+    .joints { display:grid; grid-template-columns:1fr 1fr; column-gap:18px; padding-bottom:10px; }
+    .joint { display:flex; justify-content:space-between; gap:5px; font:10px/2.25 var(--mono); color:#839087; }
+    .joint.visible { color:var(--green); }
+    .side-foot { border-top:1px solid var(--line); margin-top:20px; padding-top:16px; color:var(--dim); font-size:10px; line-height:1.8; }
+    .legend { display:flex; gap:14px; margin-bottom:8px; font:10px var(--mono); }
+    .legend span::before { content:""; display:inline-block; height:6px; width:6px; margin-right:6px; background:var(--green); }
+    .legend span:last-child::before { background:var(--amber); }
+    .footer { padding:10px 24px; border-top:1px solid var(--line); display:flex; justify-content:space-between; gap:14px; font:10px var(--mono); color:var(--dim); }
+    .footer nav { display:flex; gap:18px; }
+    .toast { position:fixed; bottom:48px; left:50%; transform:translateX(-50%); background:#26332a; border:1px solid #779680; padding:12px 20px; font-size:12px; z-index:10; max-width:90vw; }
+    .focus .workspace { grid-template-columns:minmax(0,1fr); }
+    .focus .aside { display:none; }
+    .focus .telemetry { display:none; }
+    @media (min-width:1100px) { .shell { height:100dvh; } .viewport { min-height:0; } .aside { overflow:auto; } }
+    @media (max-width:1099px) { .viewport { min-height:430px; } .workspace { grid-template-columns:minmax(0,1fr) 280px; gap:14px; padding:16px; } .aside { padding-left:14px; } .metric { padding:11px; } .metric-value { font-size:20px; } }
+    @media (max-width:760px) {
+      .masthead { padding:0 16px; height:58px; gap:16px; } .brand { font-size:15px; } .division,.clock { display:none; }
+      .workspace { display:flex; flex-direction:column; padding:16px 12px; } .viewport { min-height:0; aspect-ratio:4/3; }
+      .aside { border-left:0; border-top:1px solid var(--line); padding:18px 0 0; }
+      .source-note { display:none; } h1 { font-size:19px; }
+      .telemetry { grid-template-columns:1fr 1fr; margin-top:10px; } .metric:nth-child(2) { border-right:0; }
+      .metric:nth-child(-n+2) { border-bottom:1px solid var(--line); }
+      .track-list { max-height:230px; } .screen-toolbar { padding:8px; gap:5px; } .screen-toolbar button { padding:5px 8px; }
+      .screen-toolbar .source-name { font-size:10px; gap:5px; } .screen-foot { padding:8px; font-size:9px; }
+      .footer { padding:12px; flex-wrap:wrap; line-height:1.7; } .footer nav { gap:14px; }
+    }
+    @media (prefers-reduced-motion:no-preference) { button { transition:background .12s,border-color .12s; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header class="masthead">
+    <div class="brand"><svg viewBox="0 0 26 26" fill="none" aria-hidden="true"><path d="M2 8V2h6M18 2h6v6M24 18v6h-6M8 24H2v-6M7 13h12M13 7v12" stroke="currentColor" stroke-width="1.5"/></svg>VISION</div>
+    <div class="division eyebrow">Operator console<br><span style="color:var(--text);letter-spacing:.06em">Camera observation</span></div>
+    <div class="right"><span id="connection" class="status" data-health="connecting" role="status">CONNECTING</span><span id="clock" class="clock mono muted" style="font-size:11px"></span></div>
+  </header>
+  <main class="workspace">
+    <section class="camera" aria-label="Live camera">
+      <div class="section-head"><div><div class="eyebrow">01 / Active source</div><h1>Hand camera</h1></div><div class="source-note">Face detection · Human pose</div></div>
+      <div class="screen">
+        <div class="screen-toolbar">
+          <span class="source-name"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="1" stroke="currentColor"/><path d="m16 9 5-3v12l-5-3" stroke="currentColor"/></svg><span id="view-mode" class="mono">LIVE VIEW</span></span>
+          <button id="hold" disabled title="Hold a frame with its matching detection details" aria-pressed="false">Hold</button>
+          <button id="snapshot" disabled title="Save an annotated JPEG frame">Snapshot</button>
+          <button id="focus" aria-pressed="false" title="Expand the video and hide the inspector">Focus</button>
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="image-wrap"><canvas id="video" width="640" height="480" aria-label="Live annotated camera feed; select tracks using the track list"></canvas><div id="selection" hidden></div></div>
+          <div id="empty-screen" class="empty-screen"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M2 10V2h8m12 0h8v8m0 12v8h-8m-12 0H2v-8M10 16h12m-6-6v12" stroke="currentColor"/></svg><strong>Connecting to camera</strong><p>The live view will appear when frames arrive.</p></div>
+          <div id="frame-alert" class="frame-alert" hidden role="status"></div>
+        </div>
+        <div class="screen-foot"><span id="frame-info">AWAITING FRAME</span><span id="geometry">— × —</span></div>
+      </div>
+      <section class="telemetry" aria-label="Stream health">
+        <div class="metric"><div class="eyebrow">Source rate</div><div class="metric-value"><span id="fps">—</span><span class="unit">fps</span></div><div class="metric-note">Distinct camera frames</div></div>
+        <div class="metric"><div class="eyebrow">Processing</div><div class="metric-value"><span id="processing">—</span><span class="unit">ms</span></div><div class="metric-note">Recent stage average</div></div>
+        <div class="metric"><div class="eyebrow">Last new frame</div><div class="metric-value"><span id="freshness">—</span><span class="unit">s ago</span></div><div class="metric-note" id="frame-health">Waiting for video</div></div>
+        <div class="metric"><div class="eyebrow">Rate / last 60 s</div><svg id="rate-chart" viewBox="0 0 150 30" preserveAspectRatio="none" role="img" aria-label="Recent source frame rate"><path d="M0 29.5H150" stroke="#465249"/><path id="rate-line" fill="none" stroke="#94e6a4" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg><div class="metric-note" id="drop-note">Awaiting stream metrics</div></div>
+      </section>
+    </section>
+    <aside class="aside" aria-label="Detection inspector">
+      <div class="aside-head"><h2>Current tracks</h2><span id="track-count" class="count">—</span></div>
+      <div class="filters" role="group" aria-label="Filter track list"><button data-filter="ALL" aria-pressed="true">All</button><button data-filter="PERSON" aria-pressed="false">Bodies</button><button data-filter="FACE" aria-pressed="false">Faces</button></div>
+      <div id="track-list" class="track-list"><p class="empty-list">Waiting for detection data.</p></div>
+      <section class="inspector" aria-label="Selected track details">
+        <div class="eyebrow">Track inspector</div>
+        <div id="selection-empty" class="selection-empty">Select a track in the video or list<br>to inspect its detection details.</div>
+        <div id="details" hidden>
+          <div class="inspector-head"><h2 id="detail-title"></h2><button id="clear-selection" aria-label="Clear selected track">×</button></div>
+          <dl class="detail-grid">
+            <div><dt>Detection confidence</dt><dd id="detail-score">—</dd><div class="confidence"><span id="confidence-bar"></span></div></div>
+            <div><dt>Track state</dt><dd id="detail-state">—</dd></div>
+            <div><dt>Box in image</dt><dd id="detail-box">—</dd></div>
+            <div><dt id="pose-label">Visible joints</dt><dd id="detail-pose">—</dd></div>
+          </dl>
+          <div id="association" class="association"></div>
+          <details id="pose-details"><summary>Pose keypoint confidence</summary><div id="joints" class="joints"></div></details>
+        </div>
+      </section>
+      <div class="side-foot"><div class="legend"><span>POSE</span><span>NEW TRACK</span></div>Standard 17-point pose. Low-confidence joints are hidden.<br>Track numbers are temporary camera labels.</div>
+    </aside>
+  </main>
+  <footer class="footer"><span id="footer-state">VISION / SINGLE CAMERA</span><nav aria-label="Other views"><a href="/">3D view ↗</a><a href="/atak">Map view ↗</a></nav></footer>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const canvas = $('video'), ctx = canvas.getContext('2d', {alpha:false});
+  const state = {latest:null, held:null, selected:null, filter:'ALL', videoAt:0, dataAt:0,
+    sequence:null, videoSequence:null, busy:false, closing:false, rates:[], metricBase:null, metricAt:0,
+    startedAt:performance.now(), videoChunkAt:performance.now()};
+  const pct = n => Number.isFinite(n) ? Math.round(n*100) + '%' : '—';
+  const key = d => d.class + ':' + d.track_id;
+  const label = d => (d.class === 'PERSON' ? 'Body' : d.class === 'FACE' ? 'Face' : 'Object') + ' T' + String(d.person_track_id ?? d.track_id).padStart(3,'0');
+  const current = () => state.held ? state.held.data : state.latest;
+  const freshData = () => !!state.held || performance.now()-state.dataAt < 1500;
+  const detections = () => freshData() ? (current()?.detections || []) : [];
+  const icon = body => body
+    ? '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="5" r="2.5" stroke="currentColor"/><path d="M4 11h16M12 8v7m0 0-5 7m5-7 5 7" stroke="currentColor"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3H3v5m15-5h3v5m0 8v5h-3M6 21H3v-5" stroke="currentColor"/><ellipse cx="12" cy="11" rx="5" ry="6" stroke="currentColor"/></svg>';
+  let toastTimer, streamController, events;
+  function toast(message) {
+    $('toast').textContent=message; $('toast').hidden=false;
+    clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true,4500);
+  }
+  function paint(bitmap, sequence) {
+    if(canvas.width!==bitmap.width || canvas.height!==bitmap.height) {
+      canvas.width=bitmap.width; canvas.height=bitmap.height;
+    }
+    ctx.drawImage(bitmap,0,0); state.videoSequence=sequence;
+    $('empty-screen').hidden=true; $('geometry').textContent=canvas.width+' × '+canvas.height;
+    $('frame-info').textContent=(state.held ? 'HELD' : 'FRAME')+' '+String(sequence).padStart(6,'0');
+    positionSelection();
+  }
+  function positionSelection() {
+    const d=detections().find(d=>key(d)===state.selected), box=$('selection');
+    if(!d) { box.hidden=true; return; }
+    const r=$('viewport').getBoundingClientRect(), scale=Math.min(r.width/canvas.width,r.height/canvas.height);
+    const [l,t,right,bottom]=d.display_bbox || d.bbox;
+    box.style.left=((r.width-canvas.width*scale)/2+Math.max(0,l)*scale)+'px';
+    box.style.top=((r.height-canvas.height*scale)/2+Math.max(0,t)*scale)+'px';
+    box.style.width=(Math.max(0,Math.min(canvas.width,right)-Math.max(0,l))*scale)+'px';
+    box.style.height=(Math.max(0,Math.min(canvas.height,bottom)-Math.max(0,t))*scale)+'px';
+    box.hidden=false;
+  }
+  function renderTracks() {
+    const ds=detections(), list=$('track-list');
+    $('track-count').textContent=String(ds.length).padStart(2,'0');
+    const filtered=ds.filter(d=>state.filter==='ALL' || d.class===state.filter);
+    // Retain existing buttons so keyboard focus survives live data refreshes.
+    const existing=new Map(Array.from(list.querySelectorAll('.track')).map(el=>[el.dataset.key,el]));
+    for(const placeholder of list.querySelectorAll('.empty-list')) placeholder.remove();
+    for(const d of filtered) {
+      const k=key(d); let row=existing.get(k); existing.delete(k);
+      if(!row) {
+        row=document.createElement('button'); row.className='track'; row.dataset.key=k;
+        row.innerHTML=icon(d.class==='PERSON')+'<div><div class="track-name"></div><div class="track-sub"></div></div><div><div class="track-score"></div><div class="track-state"></div></div>';
+        row.addEventListener('click',()=>{ state.selected=k; renderTracks(); });
+        list.append(row);
+      }
+      row.classList.toggle('selected',state.selected===k); row.setAttribute('aria-pressed',String(state.selected===k));
+      row.querySelector('.track-name').textContent=label(d);
+      row.querySelector('.track-sub').textContent=d.class==='PERSON' ? 'PERSON / POSE' : 'FACE DETECTION';
+      row.querySelector('.track-score').textContent=pct(d.score);
+      const status=row.querySelector('.track-state'); status.textContent=d.track_state;
+      status.classList.toggle('new',d.track_state!=='TRACK');
+    }
+    for(const row of existing.values()) row.remove();
+    if(!filtered.length) {
+      const empty=document.createElement('p'); empty.className='empty-list';
+      empty.textContent=!freshData() ? 'Detection data is stale. Waiting for updates.' : !state.latest ? 'Waiting for detection data.' : 'No '+(state.filter==='ALL' ? 'detections' : state.filter==='PERSON' ? 'bodies' : 'faces')+' in this frame.';
+      list.append(empty);
+    }
+    const d=ds.find(d=>key(d)===state.selected);
+    $('details').hidden=!d; $('selection-empty').hidden=!!d;
+    if(!d && state.selected) $('selection-empty').textContent=freshData() ? 'Selected track is no longer in this frame.' : 'Selected track details are unavailable while data is stale.';
+    else if(!d) $('selection-empty').textContent='Select a track in the video or list to inspect its detection details.';
+    if(d) {
+      $('detail-title').textContent=label(d);
+      $('detail-score').textContent=pct(d.score); $('confidence-bar').style.width=Math.min(100,Math.max(0,d.score*100))+'%';
+      $('detail-state').textContent=d.track_state;
+      const b=d.bbox; $('detail-box').textContent=Math.round(b[2]-b[0])+' × '+Math.round(b[3]-b[1])+' px';
+      const points=d.keypoints || [], visible=p=>p.confidence>=.5 && p.x>=0 && p.y>=0 && p.x<canvas.width && p.y<canvas.height;
+      $('detail-pose').textContent=d.class==='PERSON' ? points.filter(visible).length+' / 17' : '—';
+      $('pose-details').hidden=d.class!=='PERSON';
+      $('association').textContent=d.class==='PERSON'
+        ? (ds.some(f=>f.class==='FACE' && f.person_track_id===d.track_id) ? 'Face detection associated in this frame.' : 'No face association in this frame.')
+        : d.person_track_id!=null ? 'Associated with body T'+String(d.person_track_id).padStart(3,'0')+'.' : 'No body association in this frame.';
+      const joints=$('joints'); joints.replaceChildren();
+      for(const p of points) {
+        const row=document.createElement('div'); row.className='joint'+(visible(p)?' visible':'');
+        const name=document.createElement('span'), confidence=document.createElement('span');
+        name.textContent=p.name.replace('left_','L ').replace('right_','R ').replaceAll('_',' '); confidence.textContent=pct(p.confidence);
+        row.append(name,confidence); joints.append(row);
+      }
+    }
+    positionSelection();
+  }
+  function acceptData(data) {
+    if(!Array.isArray(data.detections) || !Number.isFinite(data.frame_number) || !Number.isFinite(data.timestamp_ms)) return;
+    if(state.latest && data.timestamp_ms<state.latest.timestamp_ms) return;
+    if(!state.latest || data.timestamp_ms!==state.latest.timestamp_ms || data.frame_number!==state.latest.frame_number) {
+      if(state.latest && data.frame_number<state.latest.frame_number) state.selected=null;
+      state.dataAt=performance.now(); state.latest=data;
+      if(!state.held) renderTracks();
+    }
+  }
+  function connectData() {
+    events=new EventSource('/stream_detections');
+    events.onmessage=e=>{ try { acceptData(JSON.parse(e.data)); } catch { /* Wait for the next complete event. */ } };
+  }
+  const join=(a,b)=>{ const c=new Uint8Array(a.length+b.length); c.set(a); c.set(b,a.length); return c; };
+  function headerEnd(bytes) {
+    for(let i=0;i<bytes.length-3;i++) if(bytes[i]===13 && bytes[i+1]===10 && bytes[i+2]===13 && bytes[i+3]===10) return i+4;
+    return -1;
+  }
+  async function streamVideo() {
+    const decoder=new TextDecoder();
+    while(!state.closing) {
+      streamController=new AbortController();
+      state.videoChunkAt=performance.now();
+      let reader;
+      try {
+        const response=await fetch('/stream.mjpg',{cache:'no-store',signal:streamController.signal});
+        if(!response.ok || !response.body) throw new Error('Video unavailable');
+        reader=response.body.getReader(); let buffer=new Uint8Array();
+        while(!state.closing) {
+          const {done,value}=await reader.read(); if(done) break;
+          state.videoChunkAt=performance.now();
+          buffer=join(buffer,value); if(buffer.length>8*1024*1024) throw new Error('Invalid video packet');
+          let newest=null;
+          while(true) {
+            const end=headerEnd(buffer); if(end<0) break;
+            const headers=decoder.decode(buffer.subarray(0,end));
+            const length=Number(headers.match(/Content-Length:\s*(\d+)/i)?.[1]);
+            const sequence=Number(headers.match(/X-Sequence:\s*(\d+)/i)?.[1]);
+            if(!Number.isInteger(length) || length<=0 || length>4*1024*1024 || !Number.isInteger(sequence)) throw new Error('Invalid frame headers');
+            if(buffer.length<end+length) break;
+            newest={bytes:buffer.slice(end,end+length),sequence};
+            buffer=buffer.slice(end+length);
+          }
+          if(newest && newest.sequence!==state.sequence) {
+            state.sequence=newest.sequence; state.videoAt=performance.now();
+            if(!state.held) {
+              const bitmap=await createImageBitmap(new Blob([newest.bytes],{type:'image/jpeg'}));
+              // A hold may finish while decoding a live frame.
+              if(!state.held) paint(bitmap,newest.sequence);
+              bitmap.close();
+            }
+          }
+        }
+      } catch { /* The freshness indicator reports interruption; reconnect below. */ }
+      finally { if(reader) await reader.cancel().catch(()=>{}); }
+      if(!state.closing) await new Promise(resolve=>setTimeout(resolve,1000));
+    }
+  }
+  async function matchedFrame() {
+    for(let attempt=0;attempt<2;attempt++) {
+      const r=await fetch('/detections',{cache:'no-store',signal:AbortSignal.timeout(2500)});
+      if(r.status!==200) throw new Error('No camera frame is available yet.');
+      const data=await r.json();
+      if(!state.latest || performance.now()-state.dataAt>1500) throw new Error('The camera is stale. Wait for fresh video.');
+      const jpeg=await fetch('/frame.jpg?strict=true&frame='+encodeURIComponent(data.frame_number),{cache:'no-store',signal:AbortSignal.timeout(2500)});
+      if(jpeg.status===404) continue;
+      if(!jpeg.ok || Number(jpeg.headers.get('X-Sequence'))!==data.frame_number || jpeg.headers.has('Warning')) throw new Error('Could not match the frame and detections.');
+      return {data,blob:await jpeg.blob()};
+    }
+    throw new Error('That frame has left the buffer. Try again.');
+  }
+  async function toggleHold() {
+    if(state.busy) return;
+    if(state.held) {
+      state.held=null; $('hold').textContent='Hold'; $('hold').setAttribute('aria-pressed','false');
+      $('view-mode').textContent='LIVE VIEW'; renderTracks(); updateHealth(); return;
+    }
+    state.busy=true; updateHealth();
+    try {
+      const held=await matchedFrame(), bitmap=await createImageBitmap(held.blob);
+      state.held=held; paint(bitmap,held.data.frame_number); bitmap.close();
+      $('hold').textContent='Resume'; $('hold').setAttribute('aria-pressed','true'); $('view-mode').textContent='HELD FRAME';
+      renderTracks();
+    } catch(error) { toast(error.message || 'Could not hold a frame.'); }
+    finally { state.busy=false; updateHealth(); }
+  }
+  async function snapshot() {
+    if(state.busy) return;
+    state.busy=true; updateHealth();
+    try {
+      const frame=state.held || await matchedFrame(), url=URL.createObjectURL(frame.blob), link=document.createElement('a');
+      link.href=url; link.download='vision-frame-'+frame.data.frame_number+'.jpg'; link.click();
+      setTimeout(()=>URL.revokeObjectURL(url),10000); toast('Snapshot saved from frame '+frame.data.frame_number+'.');
+    } catch(error) { toast(error.message || 'Could not save a snapshot.'); }
+    finally { state.busy=false; updateHealth(); }
+  }
+  function updateHealth() {
+    const now=performance.now(), videoAge=state.videoAt ? (now-state.videoAt)/1000 : Infinity, dataAge=state.dataAt ? (now-state.dataAt)/1000 : Infinity;
+    let health='connecting', message='CONNECTING';
+    if(!state.videoAt && !state.dataAt && now-state.startedAt>5000) { health='offline'; message='SOURCE OFFLINE'; }
+    if(state.videoAt || state.dataAt) {
+      if(videoAge<1.5 && dataAge<1.5) { health='live'; message='SOURCE LIVE'; }
+      else if(videoAge<5 || dataAge<5) { health='stale'; message=videoAge>=1.5 ? 'VIDEO STALE' : 'DATA STALE'; }
+      else { health='offline'; message='SOURCE OFFLINE'; }
+    }
+    $('connection').dataset.health=health; $('connection').textContent=message;
+    $('fps').textContent=health==='live' && Number.isFinite(state.latest?.fps) ? state.latest.fps.toFixed(1) : '—';
+    $('freshness').textContent=Number.isFinite(videoAge)?Math.min(videoAge,999).toFixed(1):'—';
+    $('frame-health').textContent=health==='live' ? 'Video advancing' : message.charAt(0)+message.slice(1).toLowerCase();
+    $('clock').textContent=new Date().toLocaleTimeString('en-GB',{timeZone:'UTC'})+' UTC';
+    $('hold').disabled=state.busy || (!state.held && health!=='live'); $('snapshot').disabled=state.busy || (!state.held && health!=='live');
+    const alert=$('frame-alert'); alert.hidden=!state.held && health==='live';
+    if(state.held) alert.textContent='HELD FRAME · '+new Date(state.held.data.timestamp_ms).toLocaleTimeString('en-GB',{timeZone:'UTC'})+' UTC · '+(health==='live'?'Source continues live.':message+'.');
+    else if(state.videoAt) alert.textContent=message+' · Last image retained. Updates resume automatically.';
+    else { alert.hidden=true; $('empty-screen').querySelector('strong').textContent=health==='connecting'?'Connecting to camera':'Waiting for video'; }
+    $('footer-state').textContent=state.held ? 'REVIEW / HELD FRAME · SOURCE '+(health==='live'?'LIVE':'INTERRUPTED') : 'VISION / SINGLE CAMERA';
+    if(!state.held && dataAge>=1.5) renderTracks();
+    if(now-state.metricAt>7000) { $('processing').textContent='—'; $('drop-note').textContent='Stream metrics unavailable'; }
+    if(now-state.videoChunkAt>5000 && !streamController?.signal.aborted) streamController?.abort();
+  }
+  function metric(text,name,labels='') {
+    const prefix=name+labels+' ';
+    const line=text.split('\n').find(line=>line.startsWith(prefix));
+    return line ? Number(line.slice(prefix.length)) : NaN;
+  }
+  async function updateMetrics() {
+    try {
+      const r=await fetch('/metrics',{cache:'no-store',signal:AbortSignal.timeout(2000)}); if(!r.ok) throw new Error();
+      const text=await r.text(), sample={
+        sum:metric(text,'vision_stage_latency_seconds_sum','{stage="processing"}'),
+        count:metric(text,'vision_stage_latency_seconds_count','{stage="processing"}'),
+        drops:metric(text,'vision_capture_dropped_frames_total')
+      };
+      const last=state.metricBase; state.metricBase=sample; state.metricAt=performance.now();
+      if(last && sample.count>last.count && sample.sum>=last.sum) $('processing').textContent=((sample.sum-last.sum)*1000/(sample.count-last.count)).toFixed(1);
+      else $('processing').textContent='—';
+      $('drop-note').textContent=last && Number.isFinite(sample.drops) && sample.drops>=last.drops ? (sample.drops-last.drops)+' capture drops / last 3 s' : 'Measuring capture drops';
+    } catch { $('processing').textContent='—'; $('drop-note').textContent='Stream metrics unavailable'; }
+    if(!state.closing) setTimeout(updateMetrics,3000);
+  }
+  $('hold').addEventListener('click',toggleHold); $('snapshot').addEventListener('click',snapshot);
+  $('focus').addEventListener('click',()=>{
+    const focus=document.body.classList.toggle('focus'); $('focus').setAttribute('aria-pressed',String(focus)); $('focus').textContent=focus?'Exit focus':'Focus';
+  });
+  $('clear-selection').addEventListener('click',()=>{ state.selected=null; renderTracks(); });
+  document.querySelectorAll('[data-filter]').forEach(button=>button.addEventListener('click',()=>{
+    state.filter=button.dataset.filter;
+    document.querySelectorAll('[data-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b===button))); renderTracks();
+  }));
+  canvas.addEventListener('click',event=>{
+    const r=canvas.getBoundingClientRect(), scale=Math.min(r.width/canvas.width,r.height/canvas.height);
+    const x=(event.clientX-r.left-(r.width-canvas.width*scale)/2)/scale, y=(event.clientY-r.top-(r.height-canvas.height*scale)/2)/scale;
+    const hit=detections().filter(d=>{const [l,t,right,bottom]=d.display_bbox || d.bbox;return x>=l && x<=right && y>=t && y<=bottom;})
+      .sort((a,b)=>(a.bbox[2]-a.bbox[0])*(a.bbox[3]-a.bbox[1])-(b.bbox[2]-b.bbox[0])*(b.bbox[3]-b.bbox[1]))[0];
+    state.selected=hit ? key(hit):null; renderTracks();
+  });
+  new ResizeObserver(positionSelection).observe($('viewport'));
+  window.addEventListener('pagehide',()=>{ state.closing=true; events?.close(); streamController?.abort(); });
+  window.addEventListener('pageshow',event=>{ if(event.persisted) location.reload(); });
+  connectData(); streamVideo(); updateMetrics(); updateHealth(); setInterval(updateHealth,250);
+  setInterval(()=>{
+    state.rates.push(performance.now()-state.dataAt<1500 ? state.latest?.fps ?? null:null); if(state.rates.length>60) state.rates.shift();
+    const max=Math.max(30,...state.rates.filter(Number.isFinite)); let path='', gap=true;
+    state.rates.forEach((v,i)=>{ if(v==null) {gap=true;return;} path+=(gap?'M':'L')+((60-state.rates.length+i)*150/59).toFixed(1)+','+(29-Math.max(0,v)/max*27).toFixed(1); gap=false; });
+    $('rate-line').setAttribute('d',path);
+  },1000);
+})();
+</script>
+</body>
+</html>

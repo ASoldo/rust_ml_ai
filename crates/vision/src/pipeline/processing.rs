@@ -28,7 +28,7 @@ use video_ingest::{Frame, FrameFormat};
 
 use crate::pipeline::{
     annotation::{annotate_frame_cpu, annotate_frame_gpu},
-    data::DetectionSummary,
+    data::{DetectionSummary, PoseKeypoint},
     encoding::EncodeJob,
     telemetry,
     watchdog::{HealthComponent, PipelineHealth},
@@ -47,15 +47,13 @@ pub(crate) struct FrameTask {
 /// Initialiser payload shared across processing workers.
 pub(crate) struct DetectorInit {
     pub(crate) model_path: PathBuf,
+    pub(crate) pose_model_path: Option<PathBuf>,
+    pub(crate) segmentation_model_path: Option<PathBuf>,
     pub(crate) device: Device,
     pub(crate) input_size: (i64, i64),
 }
 
-#[derive(Default)]
-/// Minimal tracker assigning monotonic IDs to detections for HUD display.
-pub(crate) struct SimpleTracker {
-    next_id: i64,
-}
+pub(crate) use super::tracking::Tracker;
 
 /// Spawn a processing worker thread that owns a detector instance.
 ///
@@ -63,7 +61,7 @@ pub(crate) struct SimpleTracker {
 /// annotation jobs to the encoder stage.
 pub(crate) fn spawn_processing_worker(
     detector_init: DetectorInit,
-    tracker: Arc<Mutex<SimpleTracker>>,
+    tracker: Arc<Mutex<Tracker>>,
     work_rx: Receiver<FrameTask>,
     verbose: bool,
     jpeg_quality: i32,
@@ -88,11 +86,19 @@ pub(crate) fn spawn_processing_worker(
                 &detector_init.model_path,
                 detector_init.device,
                 detector_init.input_size,
-            ) {
+            ).and_then(|det| match detector_init.pose_model_path.as_ref() {
+                Some(path) => det.with_pose_model(path),
+                None => Ok(det),
+            }).and_then(|det| match detector_init.segmentation_model_path.as_ref() {
+                Some(path) => det.with_segmentation_model(path),
+                None => Ok(det),
+            }) {
                 Ok(det) => match init_tx.send(Ok(format!(
-                    "worker #{worker_index}: detector loaded on {:?} (vision runtime enabled: {})",
+                    "worker #{worker_index}: detector loaded on {:?} (vision runtime enabled: {}, face + person pose: {}, silhouettes: {})",
                     det.device(),
-                    det.uses_gpu_runtime()
+                    det.uses_gpu_runtime(),
+                    det.has_pose_model(),
+                    det.has_segmentation_model()
                 ))) {
                     Ok(_) => det,
                     Err(_) => return,
@@ -204,7 +210,7 @@ pub(crate) fn spawn_processing_worker(
 /// inference, annotation, and routing to CPU/GPU encode paths.
 pub(crate) fn process_frame_batch(
     detector: &Detector,
-    tracker: &Arc<Mutex<SimpleTracker>>,
+    tracker: &Arc<Mutex<Tracker>>,
     mut tasks: Vec<FrameTask>,
     verbose: bool,
     jpeg_quality: i32,
@@ -263,9 +269,42 @@ pub(crate) fn process_frame_batch(
         frames = batch_size
     )
     .in_scope(|| {
-        let outputs = detector
+        let face_start = Instant::now();
+        let mut outputs = detector
             .infer_batch(&batched_input)
             .with_context(|| "Detector inference failed")?;
+        metrics::histogram!("vision_model_inference_seconds", "model" => "face")
+            .record(face_start.elapsed().as_secs_f64());
+        if detector.has_pose_model() {
+            let pose_start = Instant::now();
+            let poses = detector
+                .infer_pose_batch(&batched_input)
+                .with_context(|| "Person pose inference failed")?;
+            metrics::histogram!("vision_model_inference_seconds", "model" => "person_pose")
+                .record(pose_start.elapsed().as_secs_f64());
+            if poses.len() != outputs.len() {
+                bail!("Face and pose batch lengths differ");
+            }
+            for (frame, pose) in outputs.iter_mut().zip(poses) {
+                // Keep the two semantic classes independent: a face is normally
+                // inside a person box and must not be removed by cross-model NMS.
+                frame.detections.extend(pose.detections);
+            }
+        }
+        if detector.has_segmentation_model() {
+            let mask_start = Instant::now();
+            let masks = detector
+                .infer_person_masks(&batched_input)
+                .with_context(|| "Person silhouette inference failed")?;
+            if masks.len() != outputs.len() {
+                bail!("Segmentation batch length differs");
+            }
+            for (frame, instances) in outputs.iter_mut().zip(masks) {
+                ml_core::segmentation::attach_person_masks(frame, instances);
+            }
+            metrics::histogram!("vision_model_inference_seconds", "model" => "person_segmentation")
+                .record(mask_start.elapsed().as_secs_f64());
+        }
         if detector.uses_gpu_runtime() {
             if let Device::Cuda(device_index) = detector.device() {
                 let _ = Cuda::synchronize(device_index as i64);
@@ -326,7 +365,7 @@ pub(crate) fn process_frame_batch(
 /// `EncodeJob`.
 fn finalize_frame(
     detector: &Detector,
-    tracker: &Arc<Mutex<SimpleTracker>>,
+    tracker: &Arc<Mutex<Tracker>>,
     task: &FrameTask,
     detections: DetectionBatch,
     verbose: bool,
@@ -365,8 +404,6 @@ fn finalize_frame(
     }
 
     let mut summaries = Vec::with_capacity(detections.detections.len());
-    let mut label_positions = Vec::with_capacity(detections.detections.len());
-    let mut boxes_px = Vec::with_capacity(detections.detections.len());
     {
         let _nms_guard = tracing::info_span!("processing.nms", frame = task.frame_number).entered();
         let (detector_w, detector_h) = detector.input_size();
@@ -387,14 +424,6 @@ fn finalize_frame(
             let right = (det.bbox[2] * scale_x).clamp(0.0, (frame.width - 1) as f32);
             let bottom = (det.bbox[3] * scale_y).clamp(0.0, (frame.height - 1) as f32);
 
-            let left_i = left.round() as i32;
-            let top_i = top.round() as i32;
-            let right_i = right.round() as i32;
-            let bottom_i = bottom.round() as i32;
-
-            boxes_px.push([left_i, top_i, right_i, bottom_i]);
-            label_positions.push((left_i, (top_i - 12).max(0)));
-
             let label = match det.class_id {
                 0 => "FACE",
                 1 => "PERSON",
@@ -406,24 +435,41 @@ fn finalize_frame(
                 score: det.score,
                 bbox: [left, top, right, bottom],
                 track_id: 0,
+                track_state: "NEW",
+                display_bbox: [left, top, right, bottom],
+                display_keypoints: Vec::new(),
+                person_track_id: None,
+                silhouette_score: det.mask.as_ref().map(|m| m.score),
+                silhouette: det.mask.clone(),
+                keypoints: det
+                    .keypoints
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| PoseKeypoint {
+                        name: super::pose::KEYPOINT_NAMES[i],
+                        x: p[0] * scale_x,
+                        y: p[1] * scale_y,
+                        confidence: p[2],
+                    })
+                    .collect(),
             });
         }
 
-        assign_tracks(tracker, &mut summaries);
+        for summary in &mut summaries {
+            summary.display_keypoints = summary.keypoints.clone();
+        }
+        tracker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("tracker poisoned"))?
+            .update(
+                task.frame_number,
+                frame.timestamp_ms,
+                (frame.width, frame.height),
+                &mut summaries,
+            );
     }
 
     let job = if let Some(runtime) = vision {
-        let labels: Vec<String> = summaries
-            .iter()
-            .map(|summary| {
-                format!(
-                    "{} {} {:.0}%",
-                    summary.class,
-                    summary.track_id,
-                    summary.score * 100.0
-                )
-            })
-            .collect();
         let gpu_job = tracing::info_span!(
             "processing.annotate",
             path = "gpu",
@@ -436,9 +482,6 @@ fn finalize_frame(
                 task.frame_number,
                 task.fps,
                 summaries.clone(),
-                &boxes_px,
-                &label_positions,
-                &labels,
                 jpeg_quality,
             )
             .map(|job| EncodeJob::Gpu {
@@ -470,12 +513,96 @@ fn finalize_frame(
     Ok(job)
 }
 
-/// Assign incremental track identifiers to detections for downstream HUD use.
-fn assign_tracks(tracker: &Arc<Mutex<SimpleTracker>>, detections: &mut [DetectionSummary]) {
-    if let Ok(mut tracker) = tracker.lock() {
-        for det in detections {
-            det.track_id = tracker.next_id;
-            tracker.next_id += 1;
+#[cfg(test)]
+mod face_pose_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires CUDA, exported face/pose models, and VISION_TEST_IMAGE with a visible person and face"]
+    fn combined_gpu_models_preserve_face_person_and_pose_geometry() {
+        crate::pipeline::runtime::load_torch_cuda_runtime(false);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let detector = Detector::new(
+            root.join("models/yolov12n-face.torchscript"),
+            Device::Cuda(0),
+            (640, 640),
+        )
+        .unwrap()
+        .with_pose_model(root.join("models/yolo26n-pose.torchscript"))
+        .unwrap()
+        .with_segmentation_model(root.join("models/yolo26n-seg.torchscript"))
+        .unwrap();
+        let image = image::open(std::env::var("VISION_TEST_IMAGE").unwrap())
+            .unwrap()
+            .to_rgb8();
+        let (width, height) = image.dimensions();
+        let mut bgr = image.into_raw();
+        for p in bgr.chunks_exact_mut(3) {
+            p.swap(0, 2);
+        }
+        let frame = Frame {
+            data: bgr,
+            width: width as i32,
+            height: height as i32,
+            timestamp_ms: 123,
+            format: FrameFormat::Bgr8,
+        };
+        let task = FrameTask {
+            frame,
+            frame_number: 1,
+            fps: 15.0,
+            enqueued_at: Instant::now(),
+            span: Span::none(),
+        };
+        let mut jobs = process_frame_batch(
+            &detector,
+            &Arc::new(Mutex::new(Tracker::default())),
+            vec![task],
+            false,
+            85,
+            detector.vision_runtime(),
+            0,
+        )
+        .unwrap();
+        let packet = match jobs.pop().unwrap() {
+            EncodeJob::Gpu { job, .. } => crate::pipeline::encoding::encode_gpu_frame(job).unwrap(),
+            EncodeJob::Cpu { .. } => panic!("expected GPU annotation path"),
+        };
+        assert!(packet.detections.iter().any(|d| d.class == "FACE"));
+        let person = packet
+            .detections
+            .iter()
+            .find(|d| d.class == "PERSON")
+            .expect("person box");
+        assert_eq!(person.keypoints.len(), 17);
+        assert!(
+            packet
+                .detections
+                .iter()
+                .filter(|d| d.class == "PERSON")
+                .any(|d| d.silhouette_score.is_some())
+        );
+        assert!(
+            packet.detections.iter().all(|d| d.silhouette.is_none()),
+            "mask rasters must not enter frame history"
+        );
+        assert!(person.keypoints.iter().any(|p| p.confidence >= 0.5));
+        for detection in &packet.detections {
+            assert!(detection.bbox[0] >= 0.0 && detection.bbox[2] < width as f32);
+            assert!(detection.bbox[1] >= 0.0 && detection.bbox[3] < height as f32);
+            if detection.class == "FACE" {
+                assert!(detection.keypoints.is_empty());
+            }
+        }
+        let decoded = image::load_from_memory(&packet.jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (width, height));
+        if let Ok(path) = std::env::var("VISION_TEST_OUTPUT") {
+            std::fs::write(&path, &packet.jpeg).unwrap();
+            std::fs::write(
+                format!("{path}.json"),
+                serde_json::to_vec_pretty(&packet.detections).unwrap(),
+            )
+            .unwrap();
         }
     }
 }

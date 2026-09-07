@@ -20,6 +20,9 @@ pub struct Detection {
     pub bbox: [f32; 4],
     pub score: f32,
     pub class_id: i64,
+    /// COCO pose points `[x, y, confidence]` in detector-image pixels.
+    pub keypoints: Vec<[f32; 3]>,
+    pub mask: Option<Arc<super::segmentation::PersonMask>>,
 }
 
 /// Batched detections for a single frame.
@@ -31,6 +34,8 @@ pub struct DetectionBatch {
 /// TorchScript-backed detector wrapper.
 pub struct Detector {
     module: tch::CModule,
+    pose_module: Option<tch::CModule>,
+    segmentation_module: Option<tch::CModule>,
     device: Device,
     input_size: (i64, i64),
     confidence_threshold: f32,
@@ -58,6 +63,8 @@ impl Detector {
         };
         Ok(Self {
             module,
+            pose_module: None,
+            segmentation_module: None,
             device,
             input_size,
             confidence_threshold: 0.25,
@@ -73,6 +80,85 @@ impl Detector {
 
     pub fn input_size(&self) -> (i64, i64) {
         self.input_size
+    }
+
+    /// Add a YOLO26 COCO pose export with NMS-free `[B, N, 57]` output.
+    /// It reuses the face detector's input tensor and CUDA preprocessing runtime.
+    pub fn with_pose_model<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
+        let mut module = tch::CModule::load_on_device(path, self.device)?;
+        module.set_eval();
+        self.pose_module = Some(module);
+        Ok(self)
+    }
+
+    /// Add the optional YOLO26n-seg end-to-end TorchScript export.
+    pub fn with_segmentation_model<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
+        let mut module = tch::CModule::load_on_device(path, self.device)?;
+        module.set_eval();
+        self.segmentation_module = Some(module);
+        Ok(self)
+    }
+
+    pub fn has_segmentation_model(&self) -> bool {
+        self.segmentation_module.is_some()
+    }
+
+    pub fn infer_person_masks(
+        &self,
+        input: &Tensor,
+    ) -> Result<Vec<Vec<Arc<super::segmentation::PersonMask>>>> {
+        super::segmentation::infer(
+            self.segmentation_module
+                .as_ref()
+                .ok_or_else(|| anyhow!("segmentation model not loaded"))?,
+            input,
+            self.confidence_threshold,
+        )
+    }
+
+    pub fn has_pose_model(&self) -> bool {
+        self.pose_module.is_some()
+    }
+
+    /// Decode person boxes and 17 COCO keypoints without suppressing face boxes.
+    pub fn infer_pose_batch(&self, input: &Tensor) -> Result<Vec<DetectionBatch>> {
+        let module = self
+            .pose_module
+            .as_ref()
+            .ok_or_else(|| anyhow!("pose model not loaded"))?;
+        let output = no_grad(|| module.forward_ts(&[input]))?;
+        let shape = output.size();
+        if shape.len() != 3 || shape[0] != input.size()[0] || shape[2] != 57 {
+            anyhow::bail!(
+                "pose export must return [batch, detections, 57] xyxy rows; got {shape:?}"
+            );
+        }
+        let mut batches = Vec::with_capacity(shape[0] as usize);
+        for idx in 0..shape[0] {
+            let preds = output.get(idx);
+            let indices = preds
+                .select(1, 4)
+                .ge(self.confidence_threshold as f64)
+                .nonzero()
+                .squeeze_dim(1);
+            let filtered = preds.index_select(0, &indices).to_device(Device::Cpu);
+            let rows = Vec::<Vec<f32>>::try_from(&filtered)?;
+            let detections = rows
+                .iter()
+                .filter_map(|row| {
+                    let pose = super::pose_output::decode_pose_row(row, self.confidence_threshold)?;
+                    Some(Detection {
+                        bbox: pose.bbox,
+                        score: pose.score,
+                        class_id: 1,
+                        keypoints: pose.keypoints,
+                        mask: None,
+                    })
+                })
+                .collect();
+            batches.push(DetectionBatch { detections });
+        }
+        Ok(batches)
     }
 
     pub fn device(&self) -> Device {
@@ -150,9 +236,9 @@ impl Detector {
         }
         let batch = shape[0];
         let channels = shape[1];
-        if channels < 5 {
+        if channels != 5 {
             anyhow::bail!(
-                "detector output requires at least 5 channels (x,y,w,h,conf), got {channels}"
+                "face export requires exactly 5 channels (x,y,w,h,face score), got {channels}; use --pose-model for the separate YOLO26 pose export"
             );
         }
 
@@ -264,11 +350,12 @@ impl Detector {
                 continue;
             }
             let bbox = xywh_to_corners(row[0], row[1], row[2], row[3], self.input_size);
-            let class_id = if row.len() > 5 { row[5] as i64 } else { 0 };
             detections.push(Detection {
                 bbox,
                 score,
-                class_id,
+                class_id: 0,
+                keypoints: Vec::new(),
+                mask: None,
             });
             if detections.len() >= 512 {
                 break;

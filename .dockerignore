@@ -9,3 +9,5 @@ screenshots
 *.ot
 venv
 __pycache__
+.playwright-cli
+output

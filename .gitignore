@@ -2,3 +2,6 @@
 /data
 /screenshots
 /Video_Codec_Interface_*
+/.playwright-cli/
+/output/
+**/__pycache__/

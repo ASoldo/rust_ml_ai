@@ -30,6 +30,9 @@ mod digits;
 pub mod detector;
 
 #[cfg(feature = "with-tch")]
+mod pose_output;
+
+#[cfg(feature = "with-tch")]
 pub use digits::{
     DIGIT_CLASS_COUNT, DigitClassifier, IMAGE_EDGE_PIXELS, Prediction, TrainingConfig,
     TrainingReport,
@@ -39,3 +42,6 @@ pub use digits::{
 pub use detector::{Detection, DetectionBatch, Detector};
 #[cfg(feature = "with-tch")]
 pub use digits::{predict_image_file, train_mnist};
+
+#[cfg(feature = "with-tch")]
+pub mod segmentation;

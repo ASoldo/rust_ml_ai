@@ -1,0 +1,32 @@
+{
+  "ultralytics": "8.4.142",
+  "torch": "2.9.0+cu128",
+  "source": "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-seg.pt",
+  "weights_sha256": "361fbfabab285c3237700b6bb91d7ecfa602cd945fffda8dbe1242829b71e73f",
+  "export_sha256": "c7fe1a63060448ecf850ac316acfa89268799505419a674dda558878fa7fdea4",
+  "input": [
+    1,
+    3,
+    640,
+    640
+  ],
+  "output": [
+    [
+      1,
+      300,
+      38
+    ],
+    [
+      1,
+      32,
+      160,
+      160
+    ]
+  ],
+  "layout": "tuple: xyxy/confidence/COCO class/32 mask coefficients; 32 mask prototypes. Rust selects class 0 person only.",
+  "nms": false,
+  "validated_devices": [
+    "cpu",
+    "cuda:0"
+  ]
+}

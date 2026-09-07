@@ -27,6 +27,8 @@ use crate::pipeline::{
 /// GPU encoding request emitted by the processing workers.
 pub(crate) struct GpuEncodeJob {
     pub(crate) runtime: Arc<Mutex<VisionRuntime>>,
+    /// Owned capture-sized pixels, independent of the runtime scratch buffer.
+    pub(crate) annotated_bgr: Vec<u8>,
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) summaries: Vec<DetectionSummary>,
@@ -68,8 +70,7 @@ pub(crate) fn spawn_encode_worker(
                 break;
             }
             let queue_depth = depth_probe.len();
-            metrics::gauge!("vision_queue_depth", "queue" => "encoding")
-                .set(queue_depth as f64);
+            metrics::gauge!("vision_queue_depth", "queue" => "encoding").set(queue_depth as f64);
             let iteration_span = tracing::info_span!(
                 "encoding.worker.iteration",
                 queue_depth = queue_depth as i64,
@@ -93,10 +94,7 @@ pub(crate) fn spawn_encode_worker(
                     ("gpu", number, result, span)
                 }
             };
-            iteration_span.record(
-                "frame",
-                &tracing::field::display(frame_number),
-            );
+            iteration_span.record("frame", &tracing::field::display(frame_number));
             iteration_span.record("path", &tracing::field::display(path_label));
 
             match packet_result {
@@ -158,6 +156,7 @@ pub(crate) fn spawn_encode_worker(
 pub(crate) fn encode_gpu_frame(job: GpuEncodeJob) -> Result<FramePacket> {
     let GpuEncodeJob {
         runtime,
+        annotated_bgr,
         width,
         height,
         summaries,
@@ -180,6 +179,9 @@ pub(crate) fn encode_gpu_frame(job: GpuEncodeJob) -> Result<FramePacket> {
         .lock()
         .map_err(|_| anyhow!("vision runtime poisoned"))?;
     let quality = jpeg_quality.clamp(1, 100);
+    guard
+        .upload_bgr(&annotated_bgr, width, height)
+        .map_err(|err| anyhow!("encoder frame upload failed: {err}"))?;
     let buffer = guard
         .encode_jpeg(width, height, quality)
         .map_err(|err| anyhow!("nvjpeg encode failed: {err}"))?;

@@ -22,7 +22,7 @@ pub(crate) struct FramePacket {
     pub(crate) timestamp_ms: i64,
     /// Monotonic frame identifier.
     pub(crate) frame_number: u64,
-    /// Smoothed instantaneous FPS for diagnostics.
+    /// Frame rate measured over the recent arrival window.
     pub(crate) fps: f32,
 }
 
@@ -33,10 +33,34 @@ pub(crate) struct DetectionSummary {
     pub(crate) class: String,
     /// Confidence score from the detector.
     pub(crate) score: f32,
-    /// Bounding box in detector-space coordinates `[left, top, right, bottom]`.
+    /// Bounding box in capture-image coordinates `[left, top, right, bottom]`.
     pub(crate) bbox: [f32; 4],
-    /// Assigned tracking identifier (simple monotonic scheme).
+    /// Short-lived, class-specific image-space track; not a person identity.
     pub(crate) track_id: i64,
+    pub(crate) track_state: &'static str,
+    /// Smoothed geometry used by the renderer; bbox/keypoints retain raw results.
+    pub(crate) display_bbox: [f32; 4],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) display_keypoints: Vec<PoseKeypoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) person_track_id: Option<i64>,
+    /// Confidence of the independently matched current-frame silhouette.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) silhouette_score: Option<f32>,
+    /// Raster is transient and removed after drawing; never retained in history/JSON.
+    #[serde(skip)]
+    pub(crate) silhouette: Option<Arc<ml_core::segmentation::PersonMask>>,
+    /// COCO pose points in capture-image pixels; empty for face detections.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) keypoints: Vec<PoseKeypoint>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct PoseKeypoint {
+    pub(crate) name: &'static str,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) confidence: f32,
 }
 
 #[derive(Serialize)]
